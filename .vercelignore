@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+apps/worker
+infra
+docs
+node_modules
+**/node_modules
+**/.next
+**/dist
+**/*.log
+.git

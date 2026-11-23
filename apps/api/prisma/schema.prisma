@@ -1,0 +1,454 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// Enums (Architecture v1.2 — Section 9)
+// ============================================================================
+
+enum UserRole {
+  OWNER
+  VIEWER
+}
+
+enum AccountMode {
+  DEMO
+  LIVE
+}
+
+enum BrokerAccountType {
+  STANDARD
+  CENT
+}
+
+enum TradeDirection {
+  BUY
+  SELL
+}
+
+enum ProposalStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  EXPIRED
+  RISK_REJECTED
+  AI_VETOED
+  EXECUTING
+  EXECUTED
+  EXECUTION_FAILED
+  CANCELLED
+}
+
+enum AiAnalysisStatus {
+  COMPLETED
+  VETOED
+  UNAVAILABLE
+  SKIPPED
+}
+
+enum AiFallbackMode {
+  DETERMINISTIC_ONLY
+  SKIP
+}
+
+enum ApprovalDecision {
+  APPROVE
+  REJECT
+}
+
+enum OrderActionType {
+  OPEN
+  CLOSE
+}
+
+enum OrderStatus {
+  REQUESTED
+  ACCEPTED
+  PARTIALLY_FILLED
+  FILLED
+  REJECTED
+  CANCELLED
+  UNKNOWN
+}
+
+enum PositionStatus {
+  OPEN
+  CLOSING
+  CLOSED
+  UNKNOWN
+}
+
+enum EventSeverity {
+  INFO
+  WARN
+  ERROR
+  CRITICAL
+}
+
+// ============================================================================
+// Core Models
+// ============================================================================
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  role         UserRole @default(OWNER)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  sessions       Session[]
+  approvals      TradeApproval[]
+  blackouts      BlackoutWindow[]
+  auditLogs      AuditLog[]
+  weeklyResets   WeeklyRiskSnapshot[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  csrfToken String
+  ip        String?
+  userAgent String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model BrokerAccount {
+  id              String            @id @default(cuid())
+  broker          String            @default("Exness")
+  platform        String            @default("MT5")
+  login           String
+  server          String
+  accountCurrency String            @default("USC")
+  currencyScale   Int               @default(100) // 1 for USD, 100 for USC (Cent)
+  accountType     BrokerAccountType @default(CENT)
+  marginMode      String            @default("HEDGING")
+  magicNumber     Int               @default(260101)
+  mode            AccountMode       @default(DEMO)
+  balance         Decimal           @default(0) @db.Decimal(18, 4)
+  equity          Decimal           @default(0) @db.Decimal(18, 4)
+  freeMargin      Decimal           @default(0) @db.Decimal(18, 4)
+  symbolSpecs     Json?
+  liveUnlockedAt  DateTime?
+  liveUnlockedBy  String?
+  isEnabled       Boolean           @default(true)
+  lastSyncedAt    DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  proposals        TradeProposal[]
+  orders           TradeOrder[]
+  positions        Position[]
+  dailySnapshots   DailyRiskSnapshot[]
+  weeklySnapshots  WeeklyRiskSnapshot[]
+
+  @@unique([login, server])
+  @@index([mode, isEnabled])
+}
+
+model TradingSettings {
+  id                           String         @id @default(cuid())
+  symbol                       String         @default("XAUUSDc")
+  riskPercent                  Decimal        @default(0.25) @db.Decimal(6, 4)
+  dailyLossLimit               Decimal        @default(1.00) @db.Decimal(6, 4)
+  weeklyLossLimit              Decimal        @default(2.00) @db.Decimal(6, 4)
+  maxPositions                 Int            @default(1)
+  maxPendingProposals          Int            @default(3)
+  minRewardRisk                Decimal        @default(2.00) @db.Decimal(6, 2)
+  maxSpread                    Decimal        @default(0.50) @db.Decimal(10, 5)
+  maxDeviationPoints           Int            @default(30)
+  commissionPerLot             Decimal        @default(0.00) @db.Decimal(12, 4)
+  approvalExpirySeconds        Int            @default(120)
+  postRejectionCooldownMinutes Int            @default(15)
+  rolloverBlackoutMinutes      Int            @default(60)
+  sessionWindows               Json
+  aiFallbackMode               AiFallbackMode @default(DETERMINISTIC_ONLY)
+  demoAutoExecute              Boolean        @default(false)
+  isPaused                     Boolean        @default(false)
+  killSwitchActive             Boolean        @default(false)
+  cooldownUntil                DateTime?
+  createdAt                    DateTime       @default(now())
+  updatedAt                    DateTime       @updatedAt
+}
+
+model Strategy {
+  id         String   @id @default(cuid())
+  name       String
+  version    String
+  timeframe  String   @default("M15")
+  parameters Json
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  proposals TradeProposal[]
+
+  @@unique([name, version])
+  @@index([isActive])
+}
+
+model BlackoutWindow {
+  id          String   @id @default(cuid())
+  title       String
+  reason      String?
+  startsAt    DateTime
+  endsAt      DateTime
+  isActive    Boolean  @default(true)
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  createdBy User? @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([isActive, startsAt, endsAt])
+}
+
+model MarketSnapshot {
+  id         String   @id @default(cuid())
+  symbol     String
+  timeframe  String
+  candleTime DateTime
+  open       Decimal  @db.Decimal(18, 5)
+  high       Decimal  @db.Decimal(18, 5)
+  low        Decimal  @db.Decimal(18, 5)
+  close      Decimal  @db.Decimal(18, 5)
+  volume     Decimal  @default(0) @db.Decimal(18, 4)
+  bid        Decimal  @db.Decimal(18, 5)
+  ask        Decimal  @db.Decimal(18, 5)
+  spread     Decimal  @db.Decimal(12, 5)
+  indicators Json
+  createdAt  DateTime @default(now())
+
+  @@unique([symbol, timeframe, candleTime])
+  @@index([symbol, timeframe, candleTime])
+  @@index([createdAt])
+}
+
+model TradeProposal {
+  id               String           @id @default(cuid())
+  dedupKey         String           @unique
+  brokerAccountId  String
+  strategyId       String
+  symbol           String
+  timeframe        String
+  direction        TradeDirection
+  entry            Decimal          @db.Decimal(18, 5)
+  stopLoss         Decimal          @db.Decimal(18, 5)
+  takeProfit       Decimal          @db.Decimal(18, 5)
+  volume           Decimal          @db.Decimal(12, 4)
+  riskAmount       Decimal          @db.Decimal(18, 4)
+  riskPercent      Decimal          @db.Decimal(6, 4)
+  rewardRisk       Decimal          @db.Decimal(8, 2)
+  estimatedMargin  Decimal?         @db.Decimal(18, 4)
+  spreadAtProposal Decimal          @db.Decimal(12, 5)
+  rationale        String
+  aiStatus         AiAnalysisStatus @default(SKIPPED)
+  aiModel          String?
+  aiPromptVersion  String?
+  aiLatencyMs      Int?
+  aiTokensUsed     Int?
+  aiRawResponse    Json?
+  status           ProposalStatus   @default(DRAFT)
+  rejectionReason  String?
+  expiresAt        DateTime
+  claimedAt        DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  brokerAccount BrokerAccount   @relation(fields: [brokerAccountId], references: [id], onDelete: Restrict)
+  strategy      Strategy        @relation(fields: [strategyId], references: [id], onDelete: Restrict)
+  approvals     TradeApproval[]
+  orders        TradeOrder[]
+
+  @@index([status, expiresAt])
+  @@index([symbol, createdAt])
+  @@index([brokerAccountId, status])
+}
+
+model TradeApproval {
+  id             String           @id @default(cuid())
+  proposalId     String
+  userId         String
+  decision       ApprovalDecision
+  approvedAt     DateTime         @default(now())
+  idempotencyKey String           @unique
+  comment        String?
+  createdAt      DateTime         @default(now())
+
+  proposal TradeProposal @relation(fields: [proposalId], references: [id], onDelete: Restrict)
+  user     User          @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([proposalId])
+  @@index([userId, createdAt])
+}
+
+model TradeOrder {
+  id              String          @id @default(cuid())
+  proposalId      String?
+  positionId      String?
+  brokerAccountId String
+  actionType      OrderActionType @default(OPEN)
+  brokerOrderId   String?
+  brokerDealId    String?
+  symbol          String
+  side            TradeDirection
+  volume          Decimal         @db.Decimal(12, 4)
+  requestedPrice  Decimal?        @db.Decimal(18, 5)
+  entryPrice      Decimal?        @db.Decimal(18, 5)
+  stopLoss        Decimal?        @db.Decimal(18, 5)
+  takeProfit      Decimal?        @db.Decimal(18, 5)
+  fillingMode     String?
+  deviationPoints Int?
+  retcode         Int?
+  brokerComment   String?
+  status          OrderStatus     @default(REQUESTED)
+  idempotencyKey  String          @unique
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  proposal      TradeProposal? @relation(fields: [proposalId], references: [id], onDelete: Restrict)
+  position      Position?      @relation(fields: [positionId], references: [id], onDelete: SetNull)
+  brokerAccount BrokerAccount  @relation(fields: [brokerAccountId], references: [id], onDelete: Restrict)
+  events        TradeEvent[]
+
+  @@unique([brokerAccountId, brokerOrderId])
+  @@unique([brokerAccountId, brokerDealId])
+  @@index([status, createdAt])
+  @@index([proposalId])
+}
+
+model Position {
+  id                  String         @id @default(cuid())
+  brokerAccountId     String
+  brokerPositionId    String         @unique
+  symbol              String
+  side                TradeDirection
+  volume              Decimal        @db.Decimal(12, 4)
+  openPrice           Decimal        @db.Decimal(18, 5)
+  currentPrice        Decimal        @db.Decimal(18, 5)
+  closePrice          Decimal?       @db.Decimal(18, 5)
+  stopLoss            Decimal?       @db.Decimal(18, 5)
+  takeProfit          Decimal?       @db.Decimal(18, 5)
+  profit              Decimal        @default(0) @db.Decimal(18, 4)
+  commission          Decimal        @default(0) @db.Decimal(18, 4)
+  swap                Decimal        @default(0) @db.Decimal(18, 4)
+  magicNumber         Int?
+  isBotManaged        Boolean        @default(true)
+  status              PositionStatus @default(OPEN)
+  closeRequestedAt    DateTime?
+  closeIdempotencyKey String?        @unique
+  openedAt            DateTime
+  closedAt            DateTime?
+  updatedAt           DateTime       @updatedAt
+
+  brokerAccount BrokerAccount @relation(fields: [brokerAccountId], references: [id], onDelete: Restrict)
+  orders        TradeOrder[]
+  events        TradeEvent[]
+
+  @@index([status, symbol])
+  @@index([brokerAccountId, status])
+  @@index([openedAt])
+}
+
+model TradeEvent {
+  id           String   @id @default(cuid())
+  tradeOrderId String?
+  positionId   String?
+  eventType    String
+  payload      Json
+  createdAt    DateTime @default(now())
+
+  tradeOrder TradeOrder? @relation(fields: [tradeOrderId], references: [id], onDelete: SetNull)
+  position   Position?   @relation(fields: [positionId], references: [id], onDelete: SetNull)
+
+  @@index([tradeOrderId, createdAt])
+  @@index([positionId, createdAt])
+}
+
+model DailyRiskSnapshot {
+  id              String        @id @default(cuid())
+  brokerAccountId String
+  date            DateTime      @db.Date
+  startingEquity  Decimal       @db.Decimal(18, 4)
+  currentEquity   Decimal       @db.Decimal(18, 4)
+  realizedPnl     Decimal       @default(0) @db.Decimal(18, 4)
+  unrealizedPnl   Decimal       @default(0) @db.Decimal(18, 4)
+  lossLimit       Decimal       @db.Decimal(6, 4)
+  isTripped       Boolean       @default(false)
+  trippedAt       DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  brokerAccount BrokerAccount @relation(fields: [brokerAccountId], references: [id], onDelete: Restrict)
+
+  @@unique([brokerAccountId, date])
+  @@index([date])
+}
+
+model WeeklyRiskSnapshot {
+  id              String        @id @default(cuid())
+  brokerAccountId String
+  weekStart       DateTime      @db.Date
+  startingEquity  Decimal       @db.Decimal(18, 4)
+  currentEquity   Decimal       @db.Decimal(18, 4)
+  realizedPnl     Decimal       @default(0) @db.Decimal(18, 4)
+  unrealizedPnl   Decimal       @default(0) @db.Decimal(18, 4)
+  lossLimit       Decimal       @db.Decimal(6, 4)
+  isTripped       Boolean       @default(false)
+  trippedAt       DateTime?
+  resetByUserId   String?
+  resetAt         DateTime?
+  resetNote       String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  brokerAccount BrokerAccount @relation(fields: [brokerAccountId], references: [id], onDelete: Restrict)
+  resetBy       User?         @relation(fields: [resetByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([brokerAccountId, weekStart])
+  @@index([weekStart, isTripped])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  action     String
+  entityType String
+  entityId   String?
+  metadata   Json
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([action, createdAt])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+model SystemEvent {
+  id        String        @id @default(cuid())
+  service   String
+  severity  EventSeverity @default(INFO)
+  message   String
+  metadata  Json
+  createdAt DateTime      @default(now())
+
+  @@index([service, severity, createdAt])
+  @@index([createdAt])
+}
