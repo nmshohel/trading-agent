@@ -36,6 +36,8 @@ from app.mt5.symbols import SymbolVerificationError, verify_symbol
 from app.queue.locks import ExecutionLockManager
 from app.queue.pubsub import SseEventPublisher
 from app.queue.streams import TradingCommandStream
+from app.strategy.base import BaseStrategy
+from app.strategy.xauusd_ew_v1 import XauusdElliottWaveV1Strategy
 from app.strategy.xauusd_v1 import XauusdV1Strategy
 
 logger = get_logger("trading_worker.main")
@@ -104,6 +106,44 @@ def sync_market_data(
     return latest_m15_time
 
 
+def _build_strategy_from_row(
+    row: dict[str, Any], price_digits: int
+) -> BaseStrategy | None:
+    name = str(row.get("name", ""))
+    params = row.get("parameters") or {}
+    if name == "xauusd_ew_v1":
+        return XauusdElliottWaveV1Strategy(
+            strategy_id=str(row["id"]),
+            version=str(row.get("version", "1.0.0")),
+            ema_fast=int(params.get("emaFast", 20)),
+            ema_mid=int(params.get("emaMid", 50)),
+            ema_slow=int(params.get("emaSlow", 200)),
+            rsi_period=int(params.get("rsiPeriod", 14)),
+            atr_period=int(params.get("atrPeriod", 14)),
+            zigzag_atr_mult=float(params.get("zigzagAtrMult", 1.5)),
+            sl_atr_buffer_multiplier=float(params.get("slAtrBufferMultiplier", 0.75)),
+            target_reward_risk=float(params.get("targetRewardRisk", 2.0)),
+            enable_wave_3=bool(params.get("enableWave3", True)),
+            enable_wave_5=bool(params.get("enableWave5", True)),
+            enable_abc=bool(params.get("enableAbc", True)),
+            price_digits=price_digits,
+        )
+    if name == "xauusd_v1":
+        return XauusdV1Strategy(
+            strategy_id=str(row["id"]),
+            version=str(row.get("version", "1.0.0")),
+            ema_fast=int(params.get("emaFast", 20)),
+            ema_mid=int(params.get("emaMid", 50)),
+            ema_slow=int(params.get("emaSlow", 200)),
+            rsi_period=int(params.get("rsiPeriod", 14)),
+            atr_period=int(params.get("atrPeriod", 14)),
+            sl_atr_buffer_multiplier=float(params.get("slAtrBufferMultiplier", 0.5)),
+            target_reward_risk=float(params.get("targetRewardRisk", 2.0)),
+            price_digits=price_digits,
+        )
+    return None
+
+
 def run_m15_strategy_scan(
     *,
     client: MT5Client,
@@ -112,18 +152,22 @@ def run_m15_strategy_scan(
     offset_seconds: int,
     scanned_dedup_keys: set[str],
 ) -> bool:
-    """Evaluate active xauusd_v1 strategy on newly closed M15 + H1 candles."""
+    """Evaluate active M15 strategies (xauusd_ew_v1, xauusd_v1) on closed candles."""
     runtime = api.get_runtime_state()
     if runtime.get("killSwitchActive") or runtime.get("isPaused"):
         return False
 
     strategies = runtime.get("strategies") or []
-    active_strat = next(
-        (s for s in strategies if s.get("isActive") and s.get("name") == "xauusd_v1"),
-        None,
-    )
-    if active_strat is None:
+    active_rows = [
+        s
+        for s in strategies
+        if s.get("isActive") and s.get("name") in ("xauusd_ew_v1", "xauusd_v1")
+    ]
+    if not active_rows:
         return False
+
+    # Prefer Elliott Wave first when multiple strategies are active
+    active_rows.sort(key=lambda s: 0 if s.get("name") == "xauusd_ew_v1" else 1)
 
     account_row = runtime.get("account") or {}
     broker_account_id = account_row.get("id")
@@ -138,24 +182,10 @@ def run_m15_strategy_scan(
 
     h1_bars = fetch_closed_candles(client, symbol_specs.symbol, "H1", 220, offset_seconds)
     m15_bars = fetch_closed_candles(
-        client, symbol_specs.symbol, "M15", 120, offset_seconds
+        client, symbol_specs.symbol, "M15", 140, offset_seconds
     )
     if not h1_bars or not m15_bars:
         return False
-
-    params = active_strat.get("parameters") or {}
-    strategy = XauusdV1Strategy(
-        strategy_id=str(active_strat["id"]),
-        version=str(active_strat.get("version", "1.0.0")),
-        ema_fast=int(params.get("emaFast", 20)),
-        ema_mid=int(params.get("emaMid", 50)),
-        ema_slow=int(params.get("emaSlow", 200)),
-        rsi_period=int(params.get("rsiPeriod", 14)),
-        atr_period=int(params.get("atrPeriod", 14)),
-        sl_atr_buffer_multiplier=float(params.get("slAtrBufferMultiplier", 0.5)),
-        target_reward_risk=float(params.get("targetRewardRisk", 2.0)),
-        price_digits=symbol_specs.digits,
-    )
 
     settings = runtime.get("settings") or {}
     ai_fallback = str(settings.get("aiFallbackMode", config.ai_fallback_mode))
@@ -169,63 +199,69 @@ def run_m15_strategy_scan(
     )
 
     open_positions = client.positions_get(symbol=symbol_specs.symbol) or []
-    try:
-        created = run_market_scan(
-            client=client,
-            api=api,
-            strategy=strategy,
-            ai_analyzer=analyzer,
-            account=account,
-            broker_account_id=str(broker_account_id),
-            symbol_specs=symbol_specs,
-            quote=quote,
-            h1_bars=h1_bars,
-            m15_bars=m15_bars,
-            now_utc=datetime.now(UTC),
-            kill_switch_active=bool(runtime.get("killSwitchActive", False)),
-            is_paused=bool(runtime.get("isPaused", False)),
-            risk_percent=Decimal(str(settings.get("riskPercent", "0.25"))),
-            min_reward_risk=Decimal(str(settings.get("minRewardRisk", "2.00"))),
-            max_spread=Decimal(str(settings.get("maxSpread", "0.50"))),
-            commission_per_lot=Decimal(str(settings.get("commissionPerLot", "0.00"))),
-            approval_expiry_seconds=int(settings.get("approvalExpirySeconds", 120)),
-            open_positions_count=len(open_positions),
-            blackouts=parse_blackouts(runtime.get("blackouts") or []),
-            cooldown_until=_parse_optional_iso(settings.get("cooldownUntil")),
-            existing_dedup_keys=scanned_dedup_keys,
-            daily_risk=_build_risk_snapshot(runtime.get("dailySnapshot")),
-            weekly_risk=_build_risk_snapshot(runtime.get("weeklySnapshot")),
-        )
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code == 409:
-            logger.info(
-                "Proposal skipped by API conflict (duplicate dedupKey or max pending)",
-                extra={"extra_data": {"detail": exc.response.text}},
+    for row in active_rows:
+        strategy = _build_strategy_from_row(row, symbol_specs.digits)
+        if strategy is None:
+            continue
+        try:
+            created = run_market_scan(
+                client=client,
+                api=api,
+                strategy=strategy,
+                ai_analyzer=analyzer,
+                account=account,
+                broker_account_id=str(broker_account_id),
+                symbol_specs=symbol_specs,
+                quote=quote,
+                h1_bars=h1_bars,
+                m15_bars=m15_bars,
+                now_utc=datetime.now(UTC),
+                kill_switch_active=bool(runtime.get("killSwitchActive", False)),
+                is_paused=bool(runtime.get("isPaused", False)),
+                risk_percent=Decimal(str(settings.get("riskPercent", "0.25"))),
+                min_reward_risk=Decimal(str(settings.get("minRewardRisk", "2.00"))),
+                max_spread=Decimal(str(settings.get("maxSpread", "0.50"))),
+                commission_per_lot=Decimal(str(settings.get("commissionPerLot", "0.00"))),
+                approval_expiry_seconds=int(settings.get("approvalExpirySeconds", 120)),
+                open_positions_count=len(open_positions),
+                blackouts=parse_blackouts(runtime.get("blackouts") or []),
+                cooldown_until=_parse_optional_iso(settings.get("cooldownUntil")),
+                existing_dedup_keys=scanned_dedup_keys,
+                daily_risk=_build_risk_snapshot(runtime.get("dailySnapshot")),
+                weekly_risk=_build_risk_snapshot(runtime.get("weeklySnapshot")),
             )
-            return False
-        raise
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 409:
+                logger.info(
+                    "Proposal skipped by API conflict (duplicate dedupKey or max pending)",
+                    extra={"extra_data": {"detail": exc.response.text}},
+                )
+                continue
+            raise
 
-    if created and isinstance(created.get("proposal"), dict):
-        dk = created["proposal"].get("dedupKey")
-        if dk:
-            scanned_dedup_keys.add(str(dk))
-        logger.info(
-            "Auto M15 scanner created proposal",
-            extra={
-                "extra_data": {
-                    "proposalId": created["proposal"].get("id"),
-                    "status": created["proposal"].get("status"),
-                    "candleTime": m15_bars[-1].candle_time.isoformat(),
-                }
-            },
-        )
-        return True
+        if created and isinstance(created.get("proposal"), dict):
+            dk = created["proposal"].get("dedupKey")
+            if dk:
+                scanned_dedup_keys.add(str(dk))
+            logger.info(
+                "Auto M15 scanner created proposal",
+                extra={
+                    "extra_data": {
+                        "strategy": strategy.name,
+                        "proposalId": created["proposal"].get("id"),
+                        "status": created["proposal"].get("status"),
+                        "candleTime": m15_bars[-1].candle_time.isoformat(),
+                    }
+                },
+            )
+            return True
 
     logger.info(
         "M15 closed-candle scan completed (no actionable setup)",
         extra={
             "extra_data": {
                 "symbol": symbol_specs.symbol,
+                "strategies": [r.get("name") for r in active_rows],
                 "m15CandleTime": m15_bars[-1].candle_time.isoformat(),
             }
         },

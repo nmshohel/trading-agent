@@ -80,6 +80,37 @@ async function main() {
     },
   });
 
+  await prisma.strategy.upsert({
+    where: {
+      name_version: {
+        name: "xauusd_ew_v1",
+        version: "1.0.0",
+      },
+    },
+    update: {},
+    create: {
+      name: "xauusd_ew_v1",
+      version: "1.0.0",
+      timeframe: "M15",
+      isActive: true,
+      parameters: {
+        higherTimeframe: "H1",
+        setupTimeframe: "M15",
+        emaFast: 20,
+        emaMid: 50,
+        emaSlow: 200,
+        rsiPeriod: 14,
+        atrPeriod: 14,
+        zigzagAtrMult: 1.5,
+        slAtrBufferMultiplier: 0.75,
+        targetRewardRisk: 2.0,
+        enableWave3: true,
+        enableWave5: true,
+        enableAbc: true,
+      },
+    },
+  });
+
   await prisma.auditLog.create({
     data: {
       actorId: owner.id,
