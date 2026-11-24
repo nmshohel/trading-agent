@@ -190,6 +190,37 @@ function createDefaultHealthChecker(): HealthChecker {
   };
 }
 
+function utcStartOfDay(now = new Date()): Date {
+  return new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+  );
+}
+
+async function countTodayOpenTrades(
+  brokerAccountId?: string,
+  now = new Date(),
+): Promise<number> {
+  const start = utcStartOfDay(now);
+  const [ordersCount, inFlightProposalsCount] = await Promise.all([
+    prisma.tradeOrder.count({
+      where: {
+        ...(brokerAccountId ? { brokerAccountId } : {}),
+        actionType: "OPEN",
+        status: { in: ["REQUESTED", "ACCEPTED", "PARTIALLY_FILLED", "FILLED"] },
+        createdAt: { gte: start },
+      },
+    }),
+    prisma.tradeProposal.count({
+      where: {
+        ...(brokerAccountId ? { brokerAccountId } : {}),
+        status: { in: ["APPROVED", "EXECUTING"] },
+        createdAt: { gte: start },
+      },
+    }),
+  ]);
+  return ordersCount + inFlightProposalsCount;
+}
+
 function createPrismaInternalRepo(sseHub: SseHub): InternalWorkerRepository {
   return {
     async getRuntimeState() {
@@ -209,8 +240,9 @@ function createPrismaInternalRepo(sseHub: SseHub): InternalWorkerRepository {
 
       let dailySnapshot = null;
       let weeklySnapshot = null;
+      let dailyTradesCount = 0;
       if (account) {
-        [dailySnapshot, weeklySnapshot] = await Promise.all([
+        [dailySnapshot, weeklySnapshot, dailyTradesCount] = await Promise.all([
           prisma.dailyRiskSnapshot.findFirst({
             where: { brokerAccountId: account.id },
             orderBy: { date: "desc" },
@@ -219,6 +251,7 @@ function createPrismaInternalRepo(sseHub: SseHub): InternalWorkerRepository {
             where: { brokerAccountId: account.id },
             orderBy: { weekStart: "desc" },
           }),
+          countTodayOpenTrades(account.id, now),
         ]);
       }
 
@@ -235,6 +268,8 @@ function createPrismaInternalRepo(sseHub: SseHub): InternalWorkerRepository {
         killSwitchActive:
           Boolean(settings?.killSwitchActive) || redisKillSwitch,
         isPaused: Boolean(settings?.isPaused),
+        dailyTradesCount,
+        maxDailyTrades: settings?.maxDailyTrades ?? 5,
         settings,
         strategies,
         blackouts,
@@ -441,6 +476,15 @@ function createPrismaInternalRepo(sseHub: SseHub): InternalWorkerRepository {
         const settings = await prisma.tradingSettings.findFirst({
           orderBy: { updatedAt: "desc" },
         });
+        const maxDailyTrades = settings?.maxDailyTrades ?? 5;
+        const todayTrades = await countTodayOpenTrades(payload.brokerAccountId);
+        if (todayTrades >= maxDailyTrades) {
+          return {
+            ok: false,
+            code: 409,
+            error: `Daily max trades limit (${todayTrades}/${maxDailyTrades}) reached for today (UTC)`,
+          };
+        }
         const maxPending = settings?.maxPendingProposals ?? 3;
         const pendingCount = await prisma.tradeProposal.count({
           where: { status: "PENDING_APPROVAL", expiresAt: { gt: new Date() } },
@@ -1314,6 +1358,7 @@ function createPrismaSettingsRepo(
     dailyLossLimit: { toString(): string };
     weeklyLossLimit: { toString(): string };
     maxPositions: number;
+    maxDailyTrades: number;
     maxPendingProposals: number;
     minRewardRisk: { toString(): string };
     maxSpread: { toString(): string };
@@ -1336,6 +1381,7 @@ function createPrismaSettingsRepo(
     dailyLossLimit: s.dailyLossLimit.toString(),
     weeklyLossLimit: s.weeklyLossLimit.toString(),
     maxPositions: s.maxPositions,
+    maxDailyTrades: s.maxDailyTrades,
     maxPendingProposals: s.maxPendingProposals,
     minRewardRisk: s.minRewardRisk.toString(),
     maxSpread: s.maxSpread.toString(),
@@ -1628,6 +1674,27 @@ function createPrismaProposalRepo(
       now,
     }) {
       return prisma.$transaction(async (tx) => {
+        const settingsRow = await tx.tradingSettings.findFirst({
+          orderBy: { updatedAt: "desc" },
+        });
+        const maxDaily = settingsRow?.maxDailyTrades ?? 5;
+        const propMeta = await tx.tradeProposal.findUnique({
+          where: { id: proposalId },
+          select: { brokerAccountId: true },
+        });
+        if (propMeta) {
+          const todayCount = await countTodayOpenTrades(
+            propMeta.brokerAccountId,
+            now,
+          );
+          if (todayCount >= maxDaily) {
+            return {
+              ok: false as const,
+              code: 409,
+              error: `Daily max trades limit (${todayCount}/${maxDaily}) reached for today (UTC)`,
+            };
+          }
+        }
         const updated = await tx.tradeProposal.updateMany({
           where: {
             id: proposalId,
@@ -2148,6 +2215,10 @@ function createPrismaDashboardRepo(): DashboardAndReportsRepository {
         return Number.isFinite(n) ? (n / scale).toFixed(2) : "0.00";
       };
 
+      const dailyTradesCount = account
+        ? await countTodayOpenTrades(account.id)
+        : 0;
+
       return {
         account: account
           ? {
@@ -2178,6 +2249,8 @@ function createPrismaDashboardRepo(): DashboardAndReportsRepository {
         counts: {
           openPositions,
           pendingProposals,
+          dailyTradesCount,
+          maxDailyTrades: settings?.maxDailyTrades ?? 5,
         },
         risk: { daily, weekly },
       };

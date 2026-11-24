@@ -224,6 +224,8 @@ def run_m15_strategy_scan(
                 commission_per_lot=Decimal(str(settings.get("commissionPerLot", "0.00"))),
                 approval_expiry_seconds=int(settings.get("approvalExpirySeconds", 120)),
                 open_positions_count=len(open_positions),
+                daily_trades_count=int(runtime.get("dailyTradesCount", 0)),
+                max_daily_trades=int(settings.get("maxDailyTrades", 5)),
                 blackouts=parse_blackouts(runtime.get("blackouts") or []),
                 cooldown_until=_parse_optional_iso(settings.get("cooldownUntil")),
                 existing_dedup_keys=scanned_dedup_keys,

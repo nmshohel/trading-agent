@@ -175,9 +175,10 @@ describe("Phase 4 API: trading settings bounds & weekly loss limit manual reset"
       .patch("/api/v1/settings/trading")
       .set("Cookie", [`ta_session=${sessionToken}`])
       .set("x-csrf-token", csrfToken)
-      .send({ riskPercent: "0.40", commissionPerLot: "0.07" });
+      .send({ riskPercent: "0.40", commissionPerLot: "0.07", maxDailyTrades: 5 });
     expect(ok.status).toBe(200);
     expect(ok.body.settings.riskPercent).toBe("0.40");
+    expect(ok.body.settings.maxDailyTrades).toBe(5);
     expect(audits).toContain("TRADING_SETTINGS_UPDATED");
   });
 

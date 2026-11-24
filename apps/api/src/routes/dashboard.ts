@@ -36,6 +36,8 @@ export interface DashboardSummaryData {
   counts: {
     openPositions: number;
     pendingProposals: number;
+    dailyTradesCount?: number;
+    maxDailyTrades?: number;
   };
   risk: {
     daily: {

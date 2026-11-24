@@ -239,6 +239,13 @@ def test_validate_pre_trade_passes_valid_cent_setup_and_blocks_all_hazards() -> 
     assert ks.approved is False
     assert "KILL_SWITCH_ACTIVE" in ks.rejection_codes
 
+    # Daily trade limit (5/5) blocks new entries
+    dl = validate_pre_trade(
+        client, base.model_copy(update={"daily_trades_count": 5, "max_daily_trades": 5})
+    )
+    assert dl.approved is False
+    assert "DAILY_TRADE_LIMIT_REACHED" in dl.rejection_codes
+
     # Price drift beyond max_deviation_points (30 * 0.01 = 0.30) blocks during execution
     drift = validate_pre_trade(
         client,

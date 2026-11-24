@@ -272,6 +272,8 @@ def execute_approved_proposal(
             commission_per_lot=Decimal(str(settings.get("commissionPerLot", "0.00"))),
             open_positions_count=len(open_positions),
             max_open_positions=int(settings.get("maxPositions", 1)),
+            daily_trades_count=int(runtime.get("dailyTradesCount", 0)),
+            max_daily_trades=int(settings.get("maxDailyTrades", 5)),
             check_pending_limit=False,
             blackouts=parse_blackouts(runtime.get("blackouts") or []),
             daily_risk=_build_risk_snapshot(runtime.get("dailySnapshot")),

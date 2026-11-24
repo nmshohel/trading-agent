@@ -51,6 +51,8 @@ class PreTradeRiskContext(BaseModel):
     # Exposure & time filters
     open_positions_count: int = 0
     max_open_positions: int = 1
+    daily_trades_count: int = 0
+    max_daily_trades: int = 5
     pending_proposals_count: int = 0
     max_pending_proposals: int = 3
     check_pending_limit: bool = True
@@ -136,6 +138,12 @@ def validate_pre_trade(
         codes.append("MAX_POSITIONS_REACHED")
         reasons.append(
             f"Open positions ({ctx.open_positions_count}) reached max ({ctx.max_open_positions})"
+        )
+
+    if ctx.daily_trades_count >= ctx.max_daily_trades:
+        codes.append("DAILY_TRADE_LIMIT_REACHED")
+        reasons.append(
+            f"Daily trade limit reached ({ctx.daily_trades_count}/{ctx.max_daily_trades})"
         )
 
     if ctx.check_pending_limit and ctx.pending_proposals_count >= ctx.max_pending_proposals:

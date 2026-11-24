@@ -21,6 +21,7 @@ export const UpdateTradingSettingsSchema = z
     dailyLossLimit: DecimalStringSchema(0.25, 5.0).optional(),
     weeklyLossLimit: DecimalStringSchema(0.5, 10.0).optional(),
     maxPositions: z.number().int().min(1).max(1).optional(), // Strictly 1 in v1
+    maxDailyTrades: z.number().int().min(1).max(20).optional(),
     maxPendingProposals: z.number().int().min(1).max(5).optional(),
     minRewardRisk: DecimalStringSchema(1.5, 5.0).optional(),
     maxSpread: DecimalStringSchema(0.05, 5.0).optional(),
@@ -49,6 +50,7 @@ export interface TradingSettingsRecord {
   dailyLossLimit: string;
   weeklyLossLimit: string;
   maxPositions: number;
+  maxDailyTrades?: number;
   maxPendingProposals: number;
   minRewardRisk: string;
   maxSpread: string;

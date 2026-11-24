@@ -168,6 +168,7 @@ model TradingSettings {
   dailyLossLimit               Decimal        @default(1.00) @db.Decimal(6, 4)
   weeklyLossLimit              Decimal        @default(2.00) @db.Decimal(6, 4)
   maxPositions                 Int            @default(1)
+  maxDailyTrades               Int            @default(5)
   maxPendingProposals          Int            @default(3)
   minRewardRisk                Decimal        @default(2.00) @db.Decimal(6, 2)
   maxSpread                    Decimal        @default(0.50) @db.Decimal(10, 5)

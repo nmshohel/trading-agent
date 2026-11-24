@@ -13,6 +13,7 @@ interface TradingSettings {
   weeklyLossLimit: string;
   maxSpread: string;
   maxDeviationPoints: number;
+  maxDailyTrades?: number;
   commissionPerLot: string;
   approvalExpirySeconds: number;
   postRejectionCooldownMinutes: number;
@@ -326,6 +327,24 @@ export default function SettingsPage() {
                         setRiskPatch((p) => ({
                           ...p,
                           commissionPerLot: e.target.value,
+                        }))
+                      }
+                      className="w-full rounded border border-slate-700 bg-slate-950 px-3 py-1.5 font-mono"
+                    />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-slate-400">
+                      Max Trades / Day (1 – 20)
+                    </span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={20}
+                      defaultValue={s.maxDailyTrades ?? 5}
+                      onChange={(e) =>
+                        setRiskPatch((p) => ({
+                          ...p,
+                          maxDailyTrades: Number(e.target.value),
                         }))
                       }
                       className="w-full rounded border border-slate-700 bg-slate-950 px-3 py-1.5 font-mono"
