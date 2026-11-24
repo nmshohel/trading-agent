@@ -64,7 +64,7 @@ def sync_market_data(
     offset_seconds: int,
     throttler: QuoteThrottler,
     tracker: CandleSyncTracker,
-    initial_candle_count: int = 50,
+    initial_candle_count: int = 10,
 ) -> datetime | None:
     """Sync live quote & newly closed candles; returns newest closed M15 candle_time."""
     quote = fetch_live_tick(client, symbol, offset_seconds)
@@ -254,6 +254,17 @@ def run_once(
         symbol_specs=symbol_specs,
         server_time_offset_seconds=offset_seconds,
     )
+    logger.info(
+        "Connected to Exness MT5 & synced heartbeat to Cloud API",
+        extra={
+            "extra_data": {
+                "login": account.login,
+                "mode": account.mode,
+                "balance": str(account.balance),
+                "symbol": symbol_specs.symbol,
+            }
+        },
+    )
 
     latest_m15 = sync_market_data(
         client=client,
@@ -263,6 +274,17 @@ def run_once(
         offset_seconds=offset_seconds,
         throttler=throttler or QuoteThrottler(),
         tracker=tracker or CandleSyncTracker(),
+    )
+
+    # Refresh heartbeat after candle sync so cloud status never expires on cold start
+    api.send_heartbeat(
+        build_heartbeat_payload(
+            config=config,
+            mt5_connected=True,
+            account=account,
+            symbol_specs=symbol_specs,
+            server_time_offset_seconds=offset_seconds,
+        )
     )
 
     runtime = api.get_runtime_state()
@@ -339,6 +361,16 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, _handle_signal)
 
     try:
+        logger.info(
+            "Starting Exness MT5 Trading Worker",
+            extra={
+                "extra_data": {
+                    "apiBaseUrl": config.worker_api_base_url,
+                    "symbol": config.mt5_symbol,
+                    "mode": config.mt5_account_mode,
+                }
+            },
+        )
         if args.once:
             run_once(config, client, api, pubsub, throttler, tracker)
             return 0
@@ -376,8 +408,8 @@ def main(argv: list[str] | None = None) -> int:
                         config, client, api, pubsub, throttler, tracker
                     )
                     run_proposal_expiry(api)
-                    last_full_sync = now
-                    last_pos_sync = now
+                    last_full_sync = time.monotonic()
+                    last_pos_sync = last_full_sync
                 else:
                     latest_m15 = sync_market_data(
                         client=client,
