@@ -130,3 +130,61 @@ def latest_indicators(
         rsi_14=round(float(last["rsi"]), 4),
         atr_14=round(float(last["atr"]), 5),
     )
+
+
+class EwIndicatorSeries(BaseModel):
+    """Full indicator arrays for Elliott Wave + EMA 21/144 + MACD(12,26,9) rules."""
+
+    ema_21: list[float]
+    ema_144: list[float | None]
+    macd_line: list[float]
+    signal_line: list[float]
+    macd_hist: list[float]
+    rsi_14: list[float]
+    atr_14: list[float]
+
+
+def compute_macd(
+    closes: pd.Series,
+    *,
+    fast: int = 12,
+    slow: int = 26,
+    signal: int = 9,
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """Standard MACD (12, 26, 9): returns (macd_line, signal_line, histogram)."""
+    ema_fast = closes.ewm(span=fast, adjust=False, min_periods=1).mean()
+    ema_slow = closes.ewm(span=slow, adjust=False, min_periods=1).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False, min_periods=1).mean()
+    hist = macd_line - signal_line
+    return macd_line, signal_line, hist
+
+
+def compute_ew_series(
+    bars: list[CandleBar],
+    *,
+    ema_fast: int = 21,
+    ema_slow: int = 144,
+    rsi_period: int = 14,
+    atr_period: int = 14,
+) -> EwIndicatorSeries | None:
+    """Compute aligned EMA 21, EMA 144, MACD(12,26,9), RSI(14), ATR(14) arrays."""
+    df = candles_to_dataframe(bars)
+    if len(df) < max(ema_fast + 5, 35):
+        return None
+
+    ema21 = df["close"].ewm(span=ema_fast, adjust=False, min_periods=1).mean()
+    ema144 = compute_ema(df["close"], ema_slow)
+    macd_line, sig_line, hist = compute_macd(df["close"])
+    rsi = compute_rsi(df["close"], rsi_period).bfill().fillna(50.0)
+    atr = compute_atr(df["high"], df["low"], df["close"], atr_period).bfill().fillna(0.0)
+
+    return EwIndicatorSeries(
+        ema_21=[float(v) for v in ema21],
+        ema_144=[None if pd.isna(v) else float(v) for v in ema144],
+        macd_line=[float(v) for v in macd_line],
+        signal_line=[float(v) for v in sig_line],
+        macd_hist=[float(v) for v in hist],
+        rsi_14=[float(v) for v in rsi],
+        atr_14=[float(v) for v in atr],
+    )
