@@ -219,7 +219,7 @@ export default function SettingsPage() {
                 Risk, Strategy &amp; Blackout Settings
               </h1>
               <p className="text-xs text-slate-400">
-                Strict v1 safety bounds enforced server-side (risk ≤ 0.50%, max
+                Strict v1 safety bounds enforced server-side (risk ≤ 2.00%, max
                 positions = 1, mandatory SL)
               </p>
             </div>
@@ -291,7 +291,7 @@ export default function SettingsPage() {
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
                   <label className="space-y-1">
                     <span className="text-slate-400">
-                      Risk % per trade (0.05 – 0.50)
+                      Risk % per trade (0.05 – 2.00)
                     </span>
                     <input
                       defaultValue={s.riskPercent}

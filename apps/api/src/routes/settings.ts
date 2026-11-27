@@ -17,7 +17,7 @@ const DecimalStringSchema = (min: number, max: number) =>
 export const UpdateTradingSettingsSchema = z
   .object({
     symbol: z.string().trim().min(3).max(20).optional(),
-    riskPercent: DecimalStringSchema(0.05, 0.5).optional(),
+    riskPercent: DecimalStringSchema(0.05, 2.0).optional(),
     dailyLossLimit: DecimalStringSchema(0.25, 5.0).optional(),
     weeklyLossLimit: DecimalStringSchema(0.5, 10.0).optional(),
     maxPositions: z.number().int().min(1).max(1).optional(), // Strictly 1 in v1

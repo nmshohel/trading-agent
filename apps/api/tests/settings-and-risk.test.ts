@@ -154,7 +154,7 @@ describe("Phase 4 API: trading settings bounds & weekly loss limit manual reset"
   it("enforces strict safe bounds on PATCH /api/v1/settings/trading", async () => {
     const app = buildApp();
 
-    // Reject riskPercent > 0.50%
+    // Reject riskPercent > 2.00%
     const highRisk = await request(app)
       .patch("/api/v1/settings/trading")
       .set("Cookie", [`ta_session=${sessionToken}`])
@@ -170,14 +170,14 @@ describe("Phase 4 API: trading settings bounds & weekly loss limit manual reset"
       .send({ maxPositions: 3 });
     expect(multiPos.status).toBe(400);
 
-    // Valid update succeeds and logs audit
+    // Valid update up to 2.00% succeeds and logs audit
     const ok = await request(app)
       .patch("/api/v1/settings/trading")
       .set("Cookie", [`ta_session=${sessionToken}`])
       .set("x-csrf-token", csrfToken)
-      .send({ riskPercent: "0.40", commissionPerLot: "0.07", maxDailyTrades: 5 });
+      .send({ riskPercent: "2.00", commissionPerLot: "0.07", maxDailyTrades: 5 });
     expect(ok.status).toBe(200);
-    expect(ok.body.settings.riskPercent).toBe("0.40");
+    expect(ok.body.settings.riskPercent).toBe("2.00");
     expect(ok.body.settings.maxDailyTrades).toBe(5);
     expect(audits).toContain("TRADING_SETTINGS_UPDATED");
   });
