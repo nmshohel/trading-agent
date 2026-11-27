@@ -55,6 +55,7 @@ class XauusdElliottWaveV1Strategy(BaseStrategy):
         max_reward_risk: float = 2.6,
         min_body_ratio: float = 0.35,
         min_smc_confluence: int = 2,
+        min_anchor_divergences: int = 2,
         h1_min_ema_sep_atr: float = 0.20,
         enable_wave_3: bool = True,
         enable_wave_5: bool = True,
@@ -78,6 +79,7 @@ class XauusdElliottWaveV1Strategy(BaseStrategy):
         self.max_reward_risk = Decimal(str(max_reward_risk))
         self.min_body_ratio = min_body_ratio
         self.min_smc_confluence = min_smc_confluence
+        self.min_anchor_divergences = min_anchor_divergences
         self.h1_min_ema_sep_atr = h1_min_ema_sep_atr
         self.enable_wave_3 = enable_wave_3
         self.enable_wave_5 = enable_wave_5
@@ -117,6 +119,10 @@ class XauusdElliottWaveV1Strategy(BaseStrategy):
                 direction=direction,
                 atr_value=atr_dec,
                 series=m15_series,
+                h1_bars=h1_window,
+                h1_pivots=h1_pivots,
+                h1_series=h1_series,
+                min_anchor_divergences=self.min_anchor_divergences,
             )
             if p5 is not None:
                 return p5
@@ -128,8 +134,10 @@ class XauusdElliottWaveV1Strategy(BaseStrategy):
                 direction=direction,
                 atr_value=atr_dec,
                 series=m15_series,
+                h1_bars=h1_window,
                 h1_pivots=h1_pivots,
                 h1_series=h1_series,
+                min_anchor_divergences=self.min_anchor_divergences,
             )
             if p3 is not None:
                 return p3
@@ -141,6 +149,10 @@ class XauusdElliottWaveV1Strategy(BaseStrategy):
                 direction=direction,
                 atr_value=atr_dec,
                 series=m15_series,
+                h1_bars=h1_window,
+                h1_pivots=h1_pivots,
+                h1_series=h1_series,
+                min_anchor_divergences=self.min_anchor_divergences,
             )
             if p_abc is not None:
                 return p_abc

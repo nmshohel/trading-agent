@@ -104,6 +104,7 @@ async function main() {
         slAtrBufferMultiplier: 0.75,
         targetRewardRisk: 2.0,
         minSmcConfluence: 2,
+        minAnchorDivergences: 2,
         enableWave3: true,
         enableWave5: true,
         enableAbc: true,

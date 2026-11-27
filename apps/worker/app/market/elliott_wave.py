@@ -187,47 +187,163 @@ def count_macd_divergences(
 
     div_count = 0
     latest_div_pivot: SwingPivot | None = None
-    # Walk backwards from most recent relevant lows/highs
-    recent = filtered[-5:]
-    for i in range(1, len(recent)):
-        prev_p = recent[i - 1]
-        curr_p = recent[i]
-        m_prev = _macd_extreme_near(macd_line, prev_p.index, target_kind)
+    # Walk forward tracking progressive extremes so only unbroken divergences at Anchor count
+    recent = filtered[-6:]
+    best_p = recent[0]
+    best_m = _macd_extreme_near(macd_line, best_p.index, target_kind)
+    for curr_p in recent[1:]:
         m_curr = _macd_extreme_near(macd_line, curr_p.index, target_kind)
         if direction == "BUY":
-            # Positive divergence: Price makes Lower Low (or equal), MACD makes Higher Low
-            if curr_p.price <= prev_p.price and m_curr > m_prev:
-                div_count += 1
-                latest_div_pivot = curr_p
+            if curr_p.price <= best_p.price:
+                if m_curr > best_m:
+                    div_count += 1
+                    latest_div_pivot = curr_p
+                else:
+                    div_count = 0
+                best_p = curr_p
+                best_m = m_curr
         else:
-            # Negative divergence: Price makes Higher High (or equal), MACD makes Lower High
-            if curr_p.price >= prev_p.price and m_curr < m_prev:
-                div_count += 1
-                latest_div_pivot = curr_p
+            if curr_p.price >= best_p.price:
+                if m_curr < best_m:
+                    div_count += 1
+                    latest_div_pivot = curr_p
+                else:
+                    div_count = 0
+                best_p = curr_p
+                best_m = m_curr
 
     return div_count, latest_div_pivot
 
 
+def count_local_macd_divergences(
+    bars: list[CandleBar],
+    macd_line: list[float],
+    macd_hist: list[float],
+    *,
+    direction: Literal["BUY", "SELL"],
+    end_idx: int,
+    lookback: int = 45,
+) -> int:
+    """Count unbroken 3-bar fractal MACD (line or histogram) divergences into end_idx."""
+    start = max(1, end_idx - lookback)
+    if end_idx - start < 4:
+        return 0
+
+    fractals: list[tuple[int, Decimal]] = []
+    for i in range(start, min(end_idx, len(bars) - 1)):
+        if direction == "BUY":
+            if (
+                bars[i].low <= bars[i - 1].low
+                and bars[i].low <= bars[i + 1].low
+                and (bars[i].low < bars[i - 1].low or bars[i].low < bars[i + 1].low)
+            ):
+                fractals.append((i, bars[i].low))
+        else:
+            if (
+                bars[i].high >= bars[i - 1].high
+                and bars[i].high >= bars[i + 1].high
+                and (bars[i].high > bars[i - 1].high or bars[i].high > bars[i + 1].high)
+            ):
+                fractals.append((i, bars[i].high))
+
+    # Always include end_idx itself as the candidate Anchor extreme
+    end_price = bars[end_idx].low if direction == "BUY" else bars[end_idx].high
+    if not fractals or fractals[-1][0] != end_idx:
+        fractals.append((end_idx, end_price))
+
+    if len(fractals) < 2:
+        return 0
+
+    kind: PivotKind = "LOW" if direction == "BUY" else "HIGH"
+    div_count = 0
+    best_idx, best_p = fractals[0]
+    best_m = _macd_extreme_near(macd_line, best_idx, kind, radius=1)
+    best_h = _macd_extreme_near(macd_hist, best_idx, kind, radius=1)
+
+    for curr_idx, curr_p in fractals[1:]:
+        if curr_idx - best_idx < 2:
+            if (direction == "BUY" and curr_p < best_p) or (
+                direction == "SELL" and curr_p > best_p
+            ):
+                best_idx, best_p = curr_idx, curr_p
+                best_m = _macd_extreme_near(macd_line, curr_idx, kind, radius=1)
+                best_h = _macd_extreme_near(macd_hist, curr_idx, kind, radius=1)
+            continue
+        m_curr = _macd_extreme_near(macd_line, curr_idx, kind, radius=1)
+        h_curr = _macd_extreme_near(macd_hist, curr_idx, kind, radius=1)
+        if direction == "BUY":
+            if curr_p <= best_p:
+                if m_curr > best_m or h_curr > best_h:
+                    div_count += 1
+                else:
+                    div_count = 0
+                best_idx, best_p = curr_idx, curr_p
+                best_m, best_h = m_curr, h_curr
+        else:
+            if curr_p >= best_p:
+                if m_curr < best_m or h_curr < best_h:
+                    div_count += 1
+                else:
+                    div_count = 0
+                best_idx, best_p = curr_idx, curr_p
+                best_m, best_h = m_curr, h_curr
+
+    if abs(end_idx - best_idx) > 3:
+        return 0
+    return div_count
+
+
 def detect_anchor_point(
     *,
+    bars: list[CandleBar],
     pivots: list[SwingPivot],
     m15_series: EwIndicatorSeries,
+    h1_bars: list[CandleBar] | None = None,
     h1_pivots: list[SwingPivot],
     h1_series: EwIndicatorSeries | None,
     direction: Literal["BUY", "SELL"],
     anchor_candidate: SwingPivot,
 ) -> AnchorPointInfo:
-    """Evaluate Anchor Point quality using Rule Set #1 (2-3x MACD divergence + 81.2% check)."""
-    m15_divs, _ = count_macd_divergences(
+    """Evaluate Anchor Point using Rule Set #1 (Mandatory 2+ MACD divergence across LTF/HTF)."""
+    m15_zz_divs, _ = count_macd_divergences(
         pivots, m15_series.macd_line, direction=direction, end_pivot_index=anchor_candidate.index
     )
+    m15_local_divs = count_local_macd_divergences(
+        bars,
+        m15_series.macd_line,
+        m15_series.macd_hist,
+        direction=direction,
+        end_idx=anchor_candidate.index,
+    )
     h1_divs = 0
-    if h1_series is not None and len(h1_pivots) >= 2:
-        h1_divs, _ = count_macd_divergences(
-            h1_pivots, h1_series.macd_line, direction=direction
-        )
+    if h1_series is not None:
+        h1_end_idx: int | None = None
+        if h1_bars:
+            h1_end_idx = len(h1_bars) - 1
+            for idx in range(len(h1_bars) - 1, -1, -1):
+                if h1_bars[idx].candle_time <= anchor_candidate.candle_time:
+                    h1_end_idx = idx
+                    break
+        if len(h1_pivots) >= 2:
+            h1_zz, _ = count_macd_divergences(
+                h1_pivots,
+                h1_series.macd_line,
+                direction=direction,
+                end_pivot_index=h1_end_idx,
+            )
+            h1_divs = max(h1_divs, h1_zz)
+        if h1_bars and h1_end_idx is not None:
+            h1_local = count_local_macd_divergences(
+                h1_bars,
+                h1_series.macd_line,
+                h1_series.macd_hist,
+                direction=direction,
+                end_idx=h1_end_idx,
+                lookback=30,
+            )
+            h1_divs = max(h1_divs, h1_local)
 
-    total_divs = m15_divs + (1 if h1_divs >= 1 else 0)
+    total_divs = max(m15_zz_divs, m15_local_divs) + h1_divs
     kind: PivotKind = "LOW" if direction == "BUY" else "HIGH"
     base_macd = _macd_extreme_near(m15_series.macd_line, anchor_candidate.index, kind)
 
@@ -291,10 +407,12 @@ def detect_wave_3(
     direction: Literal["BUY", "SELL"],
     atr_value: Decimal,
     series: EwIndicatorSeries | None = None,
+    h1_bars: list[CandleBar] | None = None,
     h1_pivots: list[SwingPivot] | None = None,
     h1_series: EwIndicatorSeries | None = None,
     min_wave_atr: Decimal = Decimal("1.8"),
     enforce_macd_base_rule: bool = True,
+    min_anchor_divergences: int = 2,
 ) -> ElliottWavePattern | None:
     """Detect Wave 1 + Wave 2 (38.2%-81.2%, hard 81.2% close & MACD Base rules) -> Wave 3."""
     if len(pivots) < 2 or atr_value <= 0:
@@ -350,14 +468,18 @@ def detect_wave_3(
         anchor_divs = 0
         if series is not None:
             anchor = detect_anchor_point(
+                bars=bars,
                 pivots=pivots,
                 m15_series=series,
+                h1_bars=h1_bars,
                 h1_pivots=h1_pivots or [],
                 h1_series=h1_series,
                 direction="BUY",
                 anchor_candidate=p0,
             )
             anchor_divs = anchor.divergence_count
+            if anchor_divs < min_anchor_divergences:
+                return None
             w1_macd_peak = _macd_extreme_near(series.macd_line, p1.index, "HIGH")
             w2_macd_low = _macd_extreme_near(series.macd_line, p2.index, "LOW")
 
@@ -365,12 +487,14 @@ def detect_wave_3(
             if enforce_macd_base_rule and w2_macd_low < anchor.base_macd:
                 return None
             macd_checks.append(
+                f"Anchor confirmed with {anchor_divs}x MACD positive divergence "
+                f"(mandatory >= {min_anchor_divergences})"
+            )
+            macd_checks.append(
                 f"W2 MACD ({w2_macd_low:.3f}) held above Anchor Base ({anchor.base_macd:.3f})"
             )
             if w1_macd_peak > 0:
                 macd_checks.append("W1 MACD crossed above zero line")
-            if anchor_divs >= 2:
-                macd_checks.append(f"Anchor confirmed with {anchor_divs}x MACD positive divergence")
 
             # EMA 21/144 check
             ema21_now = series.ema_21[-1]
@@ -445,26 +569,32 @@ def detect_wave_3(
     anchor_divs = 0
     if series is not None:
         anchor = detect_anchor_point(
+            bars=bars,
             pivots=pivots,
             m15_series=series,
+            h1_bars=h1_bars,
             h1_pivots=h1_pivots or [],
             h1_series=h1_series,
             direction="SELL",
             anchor_candidate=p0,
         )
         anchor_divs = anchor.divergence_count
+        if anchor_divs < min_anchor_divergences:
+            return None
         w1_macd_low = _macd_extreme_near(series.macd_line, p1.index, "LOW")
         w2_macd_high = _macd_extreme_near(series.macd_line, p2.index, "HIGH")
 
         if enforce_macd_base_rule and w2_macd_high > anchor.base_macd:
             return None
         macd_checks.append(
+            f"Anchor confirmed with {anchor_divs}x MACD negative divergence "
+            f"(mandatory >= {min_anchor_divergences})"
+        )
+        macd_checks.append(
             f"W2 MACD ({w2_macd_high:.3f}) held below Anchor Base ({anchor.base_macd:.3f})"
         )
         if w1_macd_low < 0:
             macd_checks.append("W1 MACD crossed below zero line")
-        if anchor_divs >= 2:
-            macd_checks.append(f"Anchor confirmed with {anchor_divs}x MACD negative divergence")
 
         ema21_now = series.ema_21[-1]
         ema21_prev = series.ema_21[-3] if len(series.ema_21) >= 3 else ema21_now
@@ -503,8 +633,12 @@ def detect_wave_5(
     direction: Literal["BUY", "SELL"],
     atr_value: Decimal,
     series: EwIndicatorSeries | None = None,
+    h1_bars: list[CandleBar] | None = None,
+    h1_pivots: list[SwingPivot] | None = None,
+    h1_series: EwIndicatorSeries | None = None,
     min_wave_atr: Decimal = Decimal("1.5"),
     enforce_w3_macd_peak: bool = True,
+    min_anchor_divergences: int = 2,
 ) -> ElliottWavePattern | None:
     """Detect Wave 4 -> Wave 5 with strict 3 Cardinal Rules + W3 MACD peak + W4 MACD reset."""
     if len(pivots) < 4 or atr_value <= 0:
@@ -559,7 +693,21 @@ def detect_wave_5(
         if bars[-1].close >= p3.price:
             return None
 
+        anchor_divs = 0
         if series is not None:
+            anchor = detect_anchor_point(
+                bars=bars,
+                pivots=pivots,
+                m15_series=series,
+                h1_bars=h1_bars,
+                h1_pivots=h1_pivots or [],
+                h1_series=h1_series,
+                direction="BUY",
+                anchor_candidate=p0,
+            )
+            anchor_divs = anchor.divergence_count
+            if anchor_divs < min_anchor_divergences:
+                return None
             w1_macd = _macd_extreme_near(series.macd_line, p1.index, "HIGH")
             w3_macd = _macd_extreme_near(series.macd_line, p3.index, "HIGH")
             w2_macd = _macd_extreme_near(series.macd_line, p2.index, "LOW")
@@ -567,6 +715,10 @@ def detect_wave_5(
             # HARD RULE (Wave 3): W3 MACD peak MUST exceed W1 MACD peak (otherwise Wave C!)
             if enforce_w3_macd_peak and w3_macd <= w1_macd:
                 return None
+            macd_checks.append(
+                f"Anchor confirmed with {anchor_divs}x MACD positive divergence "
+                f"(mandatory >= {min_anchor_divergences})"
+            )
             macd_checks.append(f"W3 MACD peak ({w3_macd:.3f}) > W1 MACD peak ({w1_macd:.3f})")
             if w4_macd < w2_macd:
                 macd_checks.append("W4 MACD reset below W2 MACD (larger degree confirmed)")
@@ -593,7 +745,7 @@ def detect_wave_5(
             extension_ratio=round(w3_ext, 3),
             invalidation_level=p4.price,
             fib_target_price=fib_target,
-            anchor_divergences=0,
+            anchor_divergences=anchor_divs,
             macd_checks=macd_checks,
             ema_checks=ema_checks,
             summary=(
@@ -642,13 +794,31 @@ def detect_wave_5(
     if bars[-1].close <= p3.price:
         return None
 
+    anchor_divs = 0
     if series is not None:
+        anchor = detect_anchor_point(
+            bars=bars,
+            pivots=pivots,
+            m15_series=series,
+            h1_bars=h1_bars,
+            h1_pivots=h1_pivots or [],
+            h1_series=h1_series,
+            direction="SELL",
+            anchor_candidate=p0,
+        )
+        anchor_divs = anchor.divergence_count
+        if anchor_divs < min_anchor_divergences:
+            return None
         w1_macd = _macd_extreme_near(series.macd_line, p1.index, "LOW")
         w3_macd = _macd_extreme_near(series.macd_line, p3.index, "LOW")
         w2_macd = _macd_extreme_near(series.macd_line, p2.index, "HIGH")
         w4_macd = _macd_extreme_near(series.macd_line, p4.index, "HIGH")
         if enforce_w3_macd_peak and w3_macd >= w1_macd:
             return None
+        macd_checks.append(
+            f"Anchor confirmed with {anchor_divs}x MACD negative divergence "
+            f"(mandatory >= {min_anchor_divergences})"
+        )
         macd_checks.append(f"W3 MACD low ({w3_macd:.3f}) < W1 MACD low ({w1_macd:.3f})")
         if w4_macd > w2_macd:
             macd_checks.append("W4 MACD reset above W2 MACD (larger degree confirmed)")
@@ -674,7 +844,7 @@ def detect_wave_5(
         extension_ratio=round(w3_ext, 3),
         invalidation_level=p4.price,
         fib_target_price=fib_target,
-        anchor_divergences=0,
+        anchor_divergences=anchor_divs,
         macd_checks=macd_checks,
         ema_checks=ema_checks,
         summary=(
@@ -691,8 +861,12 @@ def detect_abc_reversal(
     direction: Literal["BUY", "SELL"],
     atr_value: Decimal,
     series: EwIndicatorSeries | None = None,
+    h1_bars: list[CandleBar] | None = None,
+    h1_pivots: list[SwingPivot] | None = None,
+    h1_series: EwIndicatorSeries | None = None,
     min_wave_atr: Decimal = Decimal("1.4"),
     enforce_ac_macd_divergence: bool = True,
+    min_anchor_divergences: int = 2,
 ) -> ElliottWavePattern | None:
     """Detect A-B-C completion (Zigzag 38-61% / Flat 61-111% + Hard A-C MACD Divergence)."""
     if len(pivots) < 3 or atr_value <= 0:
@@ -738,14 +912,43 @@ def detect_abc_reversal(
         if bars[-1].close >= pb_end.price:
             return None
 
-        # HARD RULE (Wave C): W-C MACD MUST NOT go below W-A MACD (Positive A-C Divergence!)
+        # HARD RULE (Wave C): W-C MACD MUST NOT go below W-A MACD + 2+ total divergences
+        anchor_divs = 1
         if series is not None:
             wa_macd = _macd_extreme_near(series.macd_line, pa_end.index, "LOW")
             wc_macd = _macd_extreme_near(series.macd_line, pc_end.index, "LOW")
             if enforce_ac_macd_divergence and wc_macd < wa_macd:
                 return None
+            anchor = detect_anchor_point(
+                bars=bars,
+                pivots=pivots,
+                m15_series=series,
+                h1_bars=h1_bars,
+                h1_pivots=h1_pivots or [],
+                h1_series=h1_series,
+                direction="BUY",
+                anchor_candidate=pc_end,
+            )
+            c_internal_divs = count_local_macd_divergences(
+                bars,
+                series.macd_line,
+                series.macd_hist,
+                direction="BUY",
+                end_idx=pc_end.index,
+                lookback=max(6, pc_end.index - pb_end.index + 4),
+            )
+            anchor_divs = max(
+                anchor.divergence_count,
+                1 + c_internal_divs + (1 if anchor.htf_divergence_confirmed else 0),
+            )
+            if anchor_divs < min_anchor_divergences:
+                return None
             macd_checks.append(
                 f"Major A-C Positive MACD Divergence (W-C {wc_macd:.3f} >= W-A {wa_macd:.3f})"
+            )
+            macd_checks.append(
+                f"Wave-C Anchor confirmed with {anchor_divs}x MACD positive divergence "
+                f"(mandatory >= {min_anchor_divergences})"
             )
             if float(bars[-1].close) > series.ema_21[-1]:
                 ema_checks.append("Price reclaimed 21 EMA after Wave-C completion")
@@ -759,7 +962,7 @@ def detect_abc_reversal(
             extension_ratio=round(c_ext, 3),
             invalidation_level=pc_end.price,
             fib_target_price=pa_start.price,
-            anchor_divergences=1,
+            anchor_divergences=anchor_divs,
             macd_checks=macd_checks,
             ema_checks=ema_checks,
             summary=(
@@ -801,13 +1004,42 @@ def detect_abc_reversal(
     if bars[-1].close <= pb_end.price:
         return None
 
+    anchor_divs = 1
     if series is not None:
         wa_macd = _macd_extreme_near(series.macd_line, pa_end.index, "HIGH")
         wc_macd = _macd_extreme_near(series.macd_line, pc_end.index, "HIGH")
         if enforce_ac_macd_divergence and wc_macd > wa_macd:
             return None
+        anchor = detect_anchor_point(
+            bars=bars,
+            pivots=pivots,
+            m15_series=series,
+            h1_bars=h1_bars,
+            h1_pivots=h1_pivots or [],
+            h1_series=h1_series,
+            direction="SELL",
+            anchor_candidate=pc_end,
+        )
+        c_internal_divs = count_local_macd_divergences(
+            bars,
+            series.macd_line,
+            series.macd_hist,
+            direction="SELL",
+            end_idx=pc_end.index,
+            lookback=max(6, pc_end.index - pb_end.index + 4),
+        )
+        anchor_divs = max(
+            anchor.divergence_count,
+            1 + c_internal_divs + (1 if anchor.htf_divergence_confirmed else 0),
+        )
+        if anchor_divs < min_anchor_divergences:
+            return None
         macd_checks.append(
             f"Major A-C Negative MACD Divergence (W-C {wc_macd:.3f} <= W-A {wa_macd:.3f})"
+        )
+        macd_checks.append(
+            f"Wave-C Anchor confirmed with {anchor_divs}x MACD negative divergence "
+            f"(mandatory >= {min_anchor_divergences})"
         )
         if float(bars[-1].close) < series.ema_21[-1]:
             ema_checks.append("Price broke below 21 EMA after Wave-C completion")
@@ -821,7 +1053,7 @@ def detect_abc_reversal(
         extension_ratio=round(c_ext, 3),
         invalidation_level=pc_end.price,
         fib_target_price=pa_start.price,
-        anchor_divergences=1,
+        anchor_divergences=anchor_divs,
         macd_checks=macd_checks,
         ema_checks=ema_checks,
         summary=(

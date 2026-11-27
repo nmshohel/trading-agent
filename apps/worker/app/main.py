@@ -123,6 +123,7 @@ def _build_strategy_from_row(
             sl_atr_buffer_multiplier=float(params.get("slAtrBufferMultiplier", 0.75)),
             target_reward_risk=float(params.get("targetRewardRisk", 2.0)),
             min_smc_confluence=int(params.get("minSmcConfluence", 2)),
+            min_anchor_divergences=int(params.get("minAnchorDivergences", 2)),
             enable_wave_3=bool(params.get("enableWave3", True)),
             enable_wave_5=bool(params.get("enableWave5", True)),
             enable_abc=bool(params.get("enableAbc", True)),

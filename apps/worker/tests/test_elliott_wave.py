@@ -155,25 +155,45 @@ def test_elliott_wave_strategy_generates_valid_buy_candidate() -> None:
         for i in range(65)
     ]
 
-    # M15 bars: prior pullback to Anchor P0=3600 (negative MACD) -> Wave 1 -> 50% Wave 2 -> trigger
+    # M15 bars: 2x Positive MACD Divergence into Anchor P0=3598 -> Wave 1 -> 50% Wave 2 -> trigger
     m15_prices: list[tuple[float, float, float, float]] = []
-    # 45 warmup bars around 3620, then 15 bars falling to 3600 so Anchor P0 has deep negative MACD
-    for i in range(45):
-        base = 3622.0 + (i % 3) * 0.4
-        m15_prices.append((base, base + 1.0, base - 1.0, base + 0.1))
-    for i in range(15):
-        base = 3622.0 - i * 1.5
-        m15_prices.append((base, base + 0.8, base - 1.2, base - 1.0))
-    # Wave 1: 3600 -> 3630 (+30, MACD > 0), Wave 2: 3615 (50% retrace, MACD > Anchor)
+    # 40 warmup bars around 3628 (so total >= 60 M15 bars)
+    for i in range(40):
+        base = 3628.0 + (i % 3) * 0.3
+        m15_prices.append((base, base + 0.8, base - 0.8, base + 0.1))
+    # Sharp plunge to Low #1 = 3604 (deepest MACD trough)
+    plunge_1 = [
+        (3628.0, 3628.5, 3620.0, 3621.0),
+        (3621.0, 3621.5, 3612.0, 3613.0),
+        (3613.0, 3613.5, 3604.0, 3605.0),
+        # Bounce to 3618 (lifts MACD)
+        (3605.0, 3612.0, 3604.8, 3611.5),
+        (3611.5, 3618.0, 3611.0, 3617.0),
+        (3617.0, 3618.5, 3614.0, 3615.0),
+        # Slower drop to Low #2 = 3601 (1st Positive Divergence: LL price, HL MACD)
+        (3615.0, 3615.2, 3608.0, 3608.5),
+        (3608.5, 3609.0, 3603.0, 3604.0),
+        (3604.0, 3604.5, 3601.0, 3602.5),
+        # Bounce to 3615 (lifts MACD further)
+        (3602.5, 3609.0, 3602.0, 3608.5),
+        (3608.5, 3615.0, 3608.0, 3614.0),
+        (3614.0, 3615.5, 3611.0, 3612.0),
+        # Final weak drop to Anchor P0 = 3598 (2nd Positive Divergence: LL price, HL MACD!)
+        (3612.0, 3612.2, 3605.0, 3606.0),
+        (3606.0, 3606.5, 3600.5, 3601.5),
+        (3601.5, 3602.0, 3598.0, 3600.0),
+    ]
+    m15_prices.extend(plunge_1)
+    # Wave 1: 3598 -> 3630 (+32, MACD > 0), Wave 2: 3614 (50% retrace, MACD > Anchor)
     wave_seq = [
-        (3600.5, 3609.0, 3600.0, 3608.5),
+        (3600.0, 3609.0, 3599.5, 3608.5),
         (3608.5, 3617.0, 3608.0, 3616.5),
         (3616.5, 3624.0, 3616.0, 3623.5),
         (3623.5, 3630.0, 3623.0, 3629.0),  # Wave 1 peak 3630
         (3629.0, 3629.2, 3623.0, 3623.5),
         (3623.5, 3624.0, 3618.0, 3618.5),
-        (3618.5, 3619.0, 3615.0, 3616.0),  # Wave 2 low 3615 (50% retrace)
-        (3616.0, 3625.0, 3615.8, 3624.5),  # Strong bullish MSS + displacement candle!
+        (3618.5, 3619.0, 3614.0, 3615.5),  # Wave 2 low 3614 (50% retrace)
+        (3615.5, 3625.0, 3615.2, 3624.5),  # Strong bullish MSS + displacement candle!
     ]
     m15_prices.extend(wave_seq)
     m15_bars = _make_bars(m15_prices)
@@ -182,8 +202,8 @@ def test_elliott_wave_strategy_generates_valid_buy_candidate() -> None:
     ctx = StrategyContext(
         symbol="XAUUSDm",
         now_utc=datetime(2026, 11, 3, 13, 30, tzinfo=UTC),  # London/NY overlap
-        current_bid=Decimal("3622.200"),
-        current_ask=Decimal("3622.440"),
+        current_bid=Decimal("3624.200"),
+        current_ask=Decimal("3624.440"),
         current_spread=Decimal("0.240"),
         max_spread=Decimal("0.600"),
         h1_bars=h1_bars,
@@ -195,6 +215,7 @@ def test_elliott_wave_strategy_generates_valid_buy_candidate() -> None:
     assert cand.stop_loss < cand.entry_reference < cand.take_profit
     assert cand.reward_risk >= Decimal("2.00")
     assert "elliottWave" in cand.indicators
+    assert cand.indicators["elliottWave"]["anchorDivergences"] >= 2
     assert "smcConfluence" in cand.indicators
 
 
@@ -373,4 +394,148 @@ def test_smc_detectors_crt_hammer_fvg_ob_and_idm_swings() -> None:
     swings = detect_significant_swings_idm(idm_bars)
     assert any(s.swept_idm for s in swings)
     assert any(s.confirmed_bos for s in swings)
+
+
+def test_mandatory_two_plus_macd_divergence_gate() -> None:
+    t0 = datetime(2026, 11, 2, 10, 0, tzinfo=UTC)
+    # 1. Wave 3 BUY: only 1 divergence -> MUST REJECT; 2 divergences -> ACCEPT
+    bars_w3 = _make_bars([(105.0, 107.0, 104.5, 106.5)] * 20)
+    one_div_pivots = [
+        SwingPivot(index=2, candle_time=t0, price=Decimal("104.0"), kind="LOW"),
+        SwingPivot(index=5, candle_time=t0, price=Decimal("108.0"), kind="HIGH"),
+        SwingPivot(index=8, candle_time=t0, price=Decimal("100.0"), kind="LOW"),
+        SwingPivot(index=12, candle_time=t0, price=Decimal("110.0"), kind="HIGH"),
+        SwingPivot(index=16, candle_time=t0, price=Decimal("104.0"), kind="LOW"),
+    ]
+    one_div_macd = [0.0] * 20
+    one_div_macd[2] = -5.0
+    one_div_macd[8] = -2.0  # Only 1 divergence (idx 2 -> 8)
+    one_div_macd[12] = 2.5
+    one_div_macd[16] = -1.0
+    assert (
+        detect_wave_3(
+            bars_w3,
+            one_div_pivots,
+            direction="BUY",
+            atr_value=Decimal("2.0"),
+            series=_mock_series(one_div_macd),
+            min_anchor_divergences=2,
+        )
+        is None
+    )
+
+    two_div_pivots = [
+        SwingPivot(index=1, candle_time=t0, price=Decimal("106.0"), kind="LOW"),
+        SwingPivot(index=3, candle_time=t0, price=Decimal("109.0"), kind="HIGH"),
+        SwingPivot(index=5, candle_time=t0, price=Decimal("103.0"), kind="LOW"),
+        SwingPivot(index=7, candle_time=t0, price=Decimal("107.0"), kind="HIGH"),
+        SwingPivot(index=9, candle_time=t0, price=Decimal("100.0"), kind="LOW"),
+        SwingPivot(index=13, candle_time=t0, price=Decimal("110.0"), kind="HIGH"),
+        SwingPivot(index=16, candle_time=t0, price=Decimal("104.0"), kind="LOW"),
+    ]
+    two_div_macd = [0.0] * 20
+    two_div_macd[1] = -6.0
+    two_div_macd[5] = -3.5  # 1st divergence
+    two_div_macd[9] = -1.5  # 2nd divergence
+    two_div_macd[13] = 2.5
+    two_div_macd[16] = -0.8  # Above Anchor Base (-1.5)
+    pat_w3 = detect_wave_3(
+        bars_w3,
+        two_div_pivots,
+        direction="BUY",
+        atr_value=Decimal("2.0"),
+        series=_mock_series(two_div_macd),
+        min_anchor_divergences=2,
+    )
+    assert pat_w3 is not None
+    assert pat_w3.anchor_divergences >= 2
+
+    # 2. Wave 5 BUY: 0/1 divergence at Anchor P0 -> MUST REJECT; 2+ -> ACCEPT
+    bars_w5 = _make_bars([(118.0, 121.0, 117.5, 120.5)] * 26)
+    w5_no_div_pivots = [
+        SwingPivot(index=9, candle_time=t0, price=Decimal("100.0"), kind="LOW"),
+        SwingPivot(index=12, candle_time=t0, price=Decimal("110.0"), kind="HIGH"),
+        SwingPivot(index=15, candle_time=t0, price=Decimal("104.0"), kind="LOW"),
+        SwingPivot(index=19, candle_time=t0, price=Decimal("124.0"), kind="HIGH"),
+        SwingPivot(index=22, candle_time=t0, price=Decimal("117.0"), kind="LOW"),
+    ]
+    w5_macd = [0.0] * 26
+    w5_macd[1] = -6.0
+    w5_macd[5] = -3.5
+    w5_macd[9] = -1.5
+    w5_macd[12] = 2.0
+    w5_macd[15] = 0.2
+    w5_macd[19] = 4.5  # W3 > W1
+    w5_macd[22] = -0.2  # W4 < W2 reset
+    assert (
+        detect_wave_5(
+            bars_w5,
+            w5_no_div_pivots,
+            direction="BUY",
+            atr_value=Decimal("2.0"),
+            series=_mock_series(w5_macd),
+            min_anchor_divergences=2,
+        )
+        is None
+    )
+    w5_two_div_pivots = [
+        SwingPivot(index=1, candle_time=t0, price=Decimal("106.0"), kind="LOW"),
+        SwingPivot(index=3, candle_time=t0, price=Decimal("109.0"), kind="HIGH"),
+        SwingPivot(index=5, candle_time=t0, price=Decimal("103.0"), kind="LOW"),
+        SwingPivot(index=7, candle_time=t0, price=Decimal("107.0"), kind="HIGH"),
+    ] + w5_no_div_pivots
+    pat_w5 = detect_wave_5(
+        bars_w5,
+        w5_two_div_pivots,
+        direction="BUY",
+        atr_value=Decimal("2.0"),
+        series=_mock_series(w5_macd),
+        min_anchor_divergences=2,
+    )
+    assert pat_w5 is not None
+    assert pat_w5.anchor_divergences >= 2
+
+    # 3. ABC Reversal BUY: 1 divergence (A-C only) -> REJECT; A-C + internal W-C -> ACCEPT
+    abc_bars = _make_bars([(108.0, 111.0, 107.5, 110.5)] * 20)
+    abc_pivots = [
+        SwingPivot(index=2, candle_time=t0, price=Decimal("120.0"), kind="HIGH"),
+        SwingPivot(index=6, candle_time=t0, price=Decimal("110.0"), kind="LOW"),
+        SwingPivot(index=9, candle_time=t0, price=Decimal("115.0"), kind="HIGH"),
+        SwingPivot(index=16, candle_time=t0, price=Decimal("105.0"), kind="LOW"),
+    ]
+    abc_one_div_macd = [0.0] * 20
+    abc_one_div_macd[6] = -4.0
+    abc_one_div_macd[16] = -2.0  # Only Major A-C (1 divergence)
+    assert (
+        detect_abc_reversal(
+            abc_bars,
+            abc_pivots,
+            direction="BUY",
+            atr_value=Decimal("2.0"),
+            series=_mock_series(abc_one_div_macd),
+            min_anchor_divergences=2,
+        )
+        is None
+    )
+
+    # Add internal Wave-C W3 -> W5 divergence (bar 12 low 106.5 -> bar 16 low 105.0, MACD rises)
+    abc_two_div_prices = [(108.0, 111.0, 107.5, 110.5)] * 20
+    abc_two_div_prices[12] = (108.0, 108.5, 106.5, 107.5)
+    abc_two_div_prices[16] = (107.0, 107.5, 105.0, 106.8)
+    abc_two_div_bars = _make_bars(abc_two_div_prices)
+    abc_two_div_macd = [0.0] * 20
+    abc_two_div_macd[6] = -5.0
+    abc_two_div_macd[12] = -3.0
+    abc_two_div_macd[16] = -1.2  # Higher than both W-A (-5.0) and internal W-3 (-3.0)!
+    pat_abc = detect_abc_reversal(
+        abc_two_div_bars,
+        abc_pivots,
+        direction="BUY",
+        atr_value=Decimal("2.0"),
+        series=_mock_series(abc_two_div_macd),
+        min_anchor_divergences=2,
+    )
+    assert pat_abc is not None
+    assert pat_abc.anchor_divergences >= 2
+
 
