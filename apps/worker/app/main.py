@@ -330,11 +330,11 @@ def run_once(
     # Refresh heartbeat after candle sync so cloud status never expires on cold start
     api.send_heartbeat(
         build_heartbeat_payload(
-            config=config,
-            mt5_connected=True,
+            worker_id="win-mt5-1",
             account=account,
-            symbol_specs=symbol_specs,
+            symbol=symbol_specs.symbol,
             server_time_offset_seconds=offset_seconds,
+            mt5_connected=True,
         )
     )
 
