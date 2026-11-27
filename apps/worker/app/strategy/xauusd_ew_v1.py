@@ -1,4 +1,4 @@
-"""Elliott Wave + SMC/ICT + EMA 21/144 + MACD + VSA strategy (xauusd_ew_v1 v2.0.0)."""
+"""Elliott Wave + SMC/ICT + EMA 21/144 + MACD + VSA MTF strategy (H1 / M15 / M5)."""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ class XauusdElliottWaveV1Strategy(BaseStrategy):
         self,
         *,
         strategy_id: str = "xauusd_ew_v1",
-        version: str = "2.0.0",
+        version: str = "2.1.0",
         ema_fast: int = 21,
         ema_slow: int = 144,
         rsi_period: int = 14,
@@ -250,31 +250,7 @@ class XauusdElliottWaveV1Strategy(BaseStrategy):
         else:
             return None
 
-        # 4. Closed M15 candle + EMA 21 reclaim + RSI momentum confirmation
-        br = body_ratio(m15_last)
-        if br < self.min_body_ratio:
-            return None
-
-        m15_ema21 = Decimal(str(m15_series.ema_21[-1]))
-        m15_rsi = m15_series.rsi_14[-1]
-        if direction == "BUY":
-            candle_ok = (
-                m15_last.close > m15_last.open
-                and m15_last.close > m15_ema21
-                and m15_last.close > m15_prev.close
-                and 42.0 <= m15_rsi <= 72.0
-            )
-        else:
-            candle_ok = (
-                m15_last.close < m15_last.open
-                and m15_last.close < m15_ema21
-                and m15_last.close < m15_prev.close
-                and 28.0 <= m15_rsi <= 58.0
-            )
-        if not candle_ok:
-            return None
-
-        # 5. Detect valid causal Elliott Wave pattern with all MACD + 81.2% + Cardinal rules
+        # 4. Counting Timeframe (M15): causal Elliott Wave count + mandatory 2+ MACD divergence
         atr_dec = Decimal(str(m15_atr))
         pattern = self._detect_best_pattern(
             m15_window=m15_window,
@@ -287,15 +263,129 @@ class XauusdElliottWaveV1Strategy(BaseStrategy):
         if pattern is None:
             return None
 
-        # 6. Multi-Factor Independent Confluence Gate (NEVER buy on Fib touch alone!)
+        # 5. Lower Timeframe (M5) precision entry trigger (falls back to M15 if m5_bars absent)
+        m5_ordered = sorted(ctx.m5_bars, key=lambda b: b.candle_time)
+        use_m5_ltf = len(m5_ordered) >= 50
+
+        m5_series: EwIndicatorSeries | None = None
+        m5_atr = 0.0
+        m5_rsi = 0.0
+        live_invalidation = pattern.invalidation_level
+
+        if use_m5_ltf:
+            m5_window = m5_ordered[-180:]
+            m5_series = compute_ew_series(
+                m5_window,
+                ema_fast=self.ema_fast,
+                ema_slow=self.ema_slow,
+                rsi_period=self.rsi_period,
+                atr_period=self.atr_period,
+            )
+            if m5_series is None or m5_series.atr_14[-1] <= 0:
+                return None
+
+            m5_atr = m5_series.atr_14[-1]
+            m5_atr_dec = Decimal(str(m5_atr))
+            ltf_window = m5_window
+            ltf_last = m5_window[-1]
+            ltf_prev = m5_window[-2]
+            ltf_ema21 = Decimal(str(m5_series.ema_21[-1]))
+            m5_rsi = m5_series.rsi_14[-1]
+            ltf_rsi = m5_rsi
+            ltf_atr_dec = m5_atr_dec
+            entry_tf: Literal["M5", "M15"] = "M5"
+
+            # Verify M5 live price has not invalidated the M15 Elliott Wave structure
+            recent_m5 = m5_window[-6:]
+            if direction == "BUY":
+                live_invalidation = min(
+                    pattern.invalidation_level, min(b.low for b in recent_m5)
+                )
+                if (
+                    pattern.setup_type == "WAVE_3"
+                    and (
+                        live_invalidation <= pattern.pivots[0].price
+                        or ltf_last.close >= pattern.pivots[1].price
+                    )
+                ):
+                    return None
+                if (
+                    pattern.setup_type == "WAVE_5"
+                    and (
+                        live_invalidation <= pattern.pivots[1].price
+                        or ltf_last.close >= pattern.pivots[3].price
+                    )
+                ):
+                    return None
+                if (
+                    pattern.setup_type == "ABC_REVERSAL"
+                    and ltf_last.close >= pattern.pivots[2].price
+                ):
+                    return None
+            else:
+                live_invalidation = max(
+                    pattern.invalidation_level, max(b.high for b in recent_m5)
+                )
+                if (
+                    pattern.setup_type == "WAVE_3"
+                    and (
+                        live_invalidation >= pattern.pivots[0].price
+                        or ltf_last.close <= pattern.pivots[1].price
+                    )
+                ):
+                    return None
+                if (
+                    pattern.setup_type == "WAVE_5"
+                    and (
+                        live_invalidation >= pattern.pivots[1].price
+                        or ltf_last.close <= pattern.pivots[3].price
+                    )
+                ):
+                    return None
+                if (
+                    pattern.setup_type == "ABC_REVERSAL"
+                    and ltf_last.close <= pattern.pivots[2].price
+                ):
+                    return None
+        else:
+            ltf_window = m15_window
+            ltf_last = m15_last
+            ltf_prev = m15_prev
+            ltf_ema21 = Decimal(str(m15_series.ema_21[-1]))
+            ltf_rsi = m15_series.rsi_14[-1]
+            ltf_atr_dec = atr_dec
+            entry_tf = "M15"
+
+        br = body_ratio(ltf_last)
+        if br < self.min_body_ratio:
+            return None
+
+        if direction == "BUY":
+            candle_ok = (
+                ltf_last.close > ltf_last.open
+                and ltf_last.close > ltf_ema21
+                and ltf_last.close > ltf_prev.close
+                and 42.0 <= ltf_rsi <= 74.0
+            )
+        else:
+            candle_ok = (
+                ltf_last.close < ltf_last.open
+                and ltf_last.close < ltf_ema21
+                and ltf_last.close < ltf_prev.close
+                and 26.0 <= ltf_rsi <= 58.0
+            )
+        if not candle_ok:
+            return None
+
+        # 6. Multi-Factor LTF (M5) + HTF (H1) SMC/ICT Confluence Gate
         smc = evaluate_smc_confluence(
-            m15_bars=m15_window,
+            m15_bars=ltf_window,
             h1_bars=h1_window,
             direction=direction,
-            atr=atr_dec,
-            pullback_extreme=pattern.invalidation_level,
+            atr=ltf_atr_dec,
+            pullback_extreme=live_invalidation,
         )
-        sig_swings = detect_significant_swings_idm(m15_window[-60:])
+        sig_swings = detect_significant_swings_idm(ltf_window[-60:])
         has_recent_idm_bos = any(s.confirmed_bos for s in sig_swings[-4:])
 
         # Require MSS (Structure Shift) + minimum independent SMC/L-S-M-D-F confluence
@@ -307,21 +397,25 @@ class XauusdElliottWaveV1Strategy(BaseStrategy):
         dedup_key = build_dedup_key(
             strategy_id=self.strategy_id,
             symbol=ctx.symbol,
-            timeframe="M15",
-            candle_time=m15_last.candle_time,
+            timeframe=entry_tf,
+            candle_time=ltf_last.candle_time,
             direction=direction,
         )
         if dedup_key in ctx.existing_dedup_keys:
             return None
 
-        # 7. Hard Invalidation SL + Fibonacci Target (R:R >= 2.0)
-        sl_buffer = atr_dec * self.sl_atr_buffer_multiplier
-        min_sl_dist = atr_dec * self.min_sl_atr_multiplier
+        # 7. Hard Invalidation SL (M15 Wave / M5 Sweep) + Fibonacci Target (R:R >= 2.0)
+        if use_m5_ltf:
+            sl_buffer = max(ltf_atr_dec * Decimal("1.0"), atr_dec * Decimal("0.50"))
+            min_sl_dist = max(ltf_atr_dec * Decimal("1.5"), atr_dec * Decimal("0.85"))
+        else:
+            sl_buffer = atr_dec * self.sl_atr_buffer_multiplier
+            min_sl_dist = atr_dec * self.min_sl_atr_multiplier
         max_sl_dist = atr_dec * self.max_sl_atr_multiplier
 
         if direction == "BUY":
             entry = _round_price(ctx.current_ask, self.price_digits)
-            raw_sl = pattern.invalidation_level - sl_buffer
+            raw_sl = live_invalidation - sl_buffer
             risk_distance = entry - raw_sl
             if risk_distance < min_sl_dist:
                 raw_sl = entry - min_sl_dist
@@ -338,7 +432,7 @@ class XauusdElliottWaveV1Strategy(BaseStrategy):
             actual_rr = (take_profit - entry) / risk_distance
         else:
             entry = _round_price(ctx.current_bid, self.price_digits)
-            raw_sl = pattern.invalidation_level + sl_buffer
+            raw_sl = live_invalidation + sl_buffer
             risk_distance = raw_sl - entry
             if risk_distance < min_sl_dist:
                 raw_sl = entry + min_sl_dist
@@ -357,7 +451,13 @@ class XauusdElliottWaveV1Strategy(BaseStrategy):
         if actual_rr < self.target_reward_risk:
             return None
 
+        m15_rsi = m15_series.rsi_14[-1]
         indicators_payload: dict[str, Any] = {
+            "mtfRoles": {
+                "higherTimeframe": "H1",
+                "countingTimeframe": "M15",
+                "lowerTimeframe": entry_tf,
+            },
             "h1": {
                 "ema_21": round(h1_ema21, 3),
                 "ema_144": None if h1_ema144 is None else round(h1_ema144, 3),
@@ -376,12 +476,28 @@ class XauusdElliottWaveV1Strategy(BaseStrategy):
                 "rsi_14": round(m15_rsi, 2),
                 "atr_14": round(m15_atr, 3),
             },
+            "m5": (
+                None
+                if m5_series is None
+                else {
+                    "ema_21": round(m5_series.ema_21[-1], 3),
+                    "ema_144": (
+                        None
+                        if m5_series.ema_144[-1] is None
+                        else round(m5_series.ema_144[-1], 3)
+                    ),
+                    "macd": round(m5_series.macd_line[-1], 4),
+                    "rsi_14": round(m5_rsi, 2),
+                    "atr_14": round(m5_atr, 3),
+                }
+            ),
             "bodyRatio": round(br, 3),
             "elliottWave": {
                 "setupType": pattern.setup_type,
+                "countingTimeframe": "M15",
                 "retracementRatio": pattern.retracement_ratio,
                 "extensionRatio": pattern.extension_ratio,
-                "invalidationLevel": str(pattern.invalidation_level),
+                "invalidationLevel": str(live_invalidation),
                 "fibTargetPrice": str(
                     _round_price(pattern.fib_target_price, self.price_digits)
                 ),
@@ -390,6 +506,7 @@ class XauusdElliottWaveV1Strategy(BaseStrategy):
                 "emaChecks": pattern.ema_checks,
             },
             "smcConfluence": {
+                "triggerTimeframe": entry_tf,
                 "score": smc.score,
                 "liquiditySweep": smc.liquidity_sweep,
                 "shakeout": smc.shakeout,
@@ -406,11 +523,11 @@ class XauusdElliottWaveV1Strategy(BaseStrategy):
         }
 
         reasons = [
-            f"H1 EMA 21/144 trend {direction} aligned",
-            pattern.summary,
+            f"HTF H1 EMA 21/144 trend {direction} aligned",
+            f"Counting M15: {pattern.summary}",
             *pattern.macd_checks[:2],
             *smc.reasons[:3],
-            f"Confluence score={smc.score}/8 (RSI={m15_rsi:.1f}, body={br:.2f})",
+            f"LTF {entry_tf} trigger: Confluence={smc.score}/8 (RSI={ltf_rsi:.1f}, body={br:.2f})",
         ]
 
         return SetupCandidate(
@@ -418,9 +535,9 @@ class XauusdElliottWaveV1Strategy(BaseStrategy):
             strategy_name=self.name,
             strategy_version=self.version,
             symbol=ctx.symbol,
-            timeframe="M15",
+            timeframe=entry_tf,
             direction=direction,
-            candle_time=m15_last.candle_time,
+            candle_time=ltf_last.candle_time,
             entry_reference=entry,
             stop_loss=stop_loss,
             take_profit=take_profit,
@@ -429,8 +546,8 @@ class XauusdElliottWaveV1Strategy(BaseStrategy):
             deterministic_reasons=reasons,
             invalidation_rules=[
                 (
-                    f"Elliott Wave {pattern.setup_type} invalidated if price "
-                    f"breaches {pattern.invalidation_level}"
+                    f"M15 Elliott Wave {pattern.setup_type} invalidated if price "
+                    f"breaches {live_invalidation}"
                 ),
                 "Wave-2 close beyond 81.2% or MACD below Base Point invalidates impulse",
             ],

@@ -88,11 +88,14 @@ def sync_market_data(
                 extra={"extra_data": {"error": str(exc)}},
             )
 
+    latest_m5_time: datetime | None = None
     latest_m15_time: datetime | None = None
     for tf in SYNC_TIMEFRAMES:
         bars = fetch_closed_candles(
             client, symbol, tf, initial_candle_count, offset_seconds
         )
+        if tf == "M5" and bars:
+            latest_m5_time = bars[-1].candle_time
         if tf == "M15" and bars:
             latest_m15_time = bars[-1].candle_time
         for bar in tracker.filter_unsynced(bars):
@@ -103,7 +106,7 @@ def sync_market_data(
             )
             tracker.mark_synced(bar)
 
-    return latest_m15_time
+    return latest_m5_time or latest_m15_time
 
 
 def _build_strategy_from_row(
@@ -185,6 +188,9 @@ def run_m15_strategy_scan(
     m15_bars = fetch_closed_candles(
         client, symbol_specs.symbol, "M15", 140, offset_seconds
     )
+    m5_bars = fetch_closed_candles(
+        client, symbol_specs.symbol, "M5", 180, offset_seconds
+    )
     if not h1_bars or not m15_bars:
         return False
 
@@ -216,6 +222,7 @@ def run_m15_strategy_scan(
                 quote=quote,
                 h1_bars=h1_bars,
                 m15_bars=m15_bars,
+                m5_bars=m5_bars,
                 now_utc=datetime.now(UTC),
                 kill_switch_active=bool(runtime.get("killSwitchActive", False)),
                 is_paused=bool(runtime.get("isPaused", False)),
@@ -247,24 +254,29 @@ def run_m15_strategy_scan(
             if dk:
                 scanned_dedup_keys.add(str(dk))
             logger.info(
-                "Auto M15 scanner created proposal",
+                "Auto MTF (H1/M15/M5) scanner created proposal",
                 extra={
                     "extra_data": {
                         "strategy": strategy.name,
                         "proposalId": created["proposal"].get("id"),
                         "status": created["proposal"].get("status"),
-                        "candleTime": m15_bars[-1].candle_time.isoformat(),
+                        "timeframe": created["proposal"].get("timeframe"),
+                        "m5CandleTime": (
+                            m5_bars[-1].candle_time.isoformat() if m5_bars else None
+                        ),
+                        "m15CandleTime": m15_bars[-1].candle_time.isoformat(),
                     }
                 },
             )
             return True
 
     logger.info(
-        "M15 closed-candle scan completed (no actionable setup)",
+        "MTF (H1/M15/M5) closed-candle scan completed (no actionable setup)",
         extra={
             "extra_data": {
                 "symbol": symbol_specs.symbol,
                 "strategies": [r.get("name") for r in active_rows],
+                "m5CandleTime": m5_bars[-1].candle_time.isoformat() if m5_bars else None,
                 "m15CandleTime": m15_bars[-1].candle_time.isoformat(),
             }
         },

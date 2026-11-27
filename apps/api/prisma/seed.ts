@@ -90,12 +90,14 @@ async function main() {
     update: {},
     create: {
       name: "xauusd_ew_v1",
-      version: "1.0.0",
-      timeframe: "M15",
+      version: "2.1.0",
+      timeframe: "M5",
       isActive: true,
       parameters: {
         higherTimeframe: "H1",
-        setupTimeframe: "M15",
+        countingTimeframe: "M15",
+        lowerTimeframe: "M5",
+        setupTimeframe: "M5",
         emaFast: 21,
         emaSlow: 144,
         rsiPeriod: 14,

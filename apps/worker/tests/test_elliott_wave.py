@@ -539,3 +539,111 @@ def test_mandatory_two_plus_macd_divergence_gate() -> None:
     assert pat_abc.anchor_divergences >= 2
 
 
+def test_mtf_h1_bias_m15_counting_m5_trigger() -> None:
+    """Verify full 3-TF pipeline: H1 (HTF) -> M15 (Elliott Counting) -> M5 (LTF Trigger)."""
+    h1_start = datetime(2026, 10, 28, 0, 0, tzinfo=UTC)
+    h1_bars = [
+        CandleBar(
+            symbol="XAUUSDm",
+            timeframe="H1",
+            candle_time=h1_start + timedelta(hours=i),
+            open=Decimal(f"{3500 + i * 2.0:.3f}"),
+            high=Decimal(f"{3502 + i * 2.0:.3f}"),
+            low=Decimal(f"{3499 + i * 2.0:.3f}"),
+            close=Decimal(f"{3501.5 + i * 2.0:.3f}"),
+            volume=Decimal("500"),
+        )
+        for i in range(65)
+    ]
+
+    # M15: 2x Positive MACD Divergence into Anchor P0=3598 -> W1=3630 -> W2=3614
+    m15_prices: list[tuple[float, float, float, float]] = []
+    for i in range(40):
+        base = 3628.0 + (i % 3) * 0.3
+        m15_prices.append((base, base + 0.8, base - 0.8, base + 0.1))
+    m15_prices.extend(
+        [
+            (3628.0, 3628.5, 3620.0, 3621.0),
+            (3621.0, 3621.5, 3612.0, 3613.0),
+            (3613.0, 3613.5, 3604.0, 3605.0),
+            (3605.0, 3612.0, 3604.8, 3611.5),
+            (3611.5, 3618.0, 3611.0, 3617.0),
+            (3617.0, 3618.5, 3614.0, 3615.0),
+            (3615.0, 3615.2, 3608.0, 3608.5),
+            (3608.5, 3609.0, 3603.0, 3604.0),
+            (3604.0, 3604.5, 3601.0, 3602.5),
+            (3602.5, 3609.0, 3602.0, 3608.5),
+            (3608.5, 3615.0, 3608.0, 3614.0),
+            (3614.0, 3615.5, 3611.0, 3612.0),
+            (3612.0, 3612.2, 3605.0, 3606.0),
+            (3606.0, 3606.5, 3600.5, 3601.5),
+            (3601.5, 3602.0, 3598.0, 3600.0),
+            # Wave 1 & Wave 2 pullback on M15 (note: last M15 is still pulling back!)
+            (3600.0, 3609.0, 3599.5, 3608.5),
+            (3608.5, 3617.0, 3608.0, 3616.5),
+            (3616.5, 3624.0, 3616.0, 3623.5),
+            (3623.5, 3630.0, 3623.0, 3629.0),
+            (3629.0, 3629.2, 3623.0, 3623.5),
+            (3623.5, 3624.0, 3618.0, 3618.5),
+            (3618.5, 3619.0, 3614.0, 3615.0),  # M15 still bearish/red at W2 low!
+        ]
+    )
+    m15_bars = _make_bars(m15_prices)
+
+    # M5: 55 bars forming the pullback into 3614 -> liquidity sweep to 3613.5 -> M5 MSS + 21 EMA
+    m5_start = datetime(2026, 11, 3, 8, 0, tzinfo=UTC)
+    m5_tuples: list[tuple[float, float, float, float]] = []
+    for i in range(48):
+        p = 3626.0 - i * 0.22
+        m5_tuples.append((p, p + 0.7, p - 0.7, p - 0.15))
+    # M5 sniper reversal sequence: sweep -> CRT -> strong displacement MSS above 21 EMA
+    m5_tuples.extend(
+        [
+            (3615.8, 3616.2, 3614.5, 3614.8),
+            (3614.8, 3615.2, 3614.0, 3614.4),
+            (3614.4, 3615.0, 3613.5, 3614.6),  # Liquidity sweep + CRT manipulation!
+            (3614.6, 3617.5, 3614.5, 3617.2),  # Bullish push
+            (3617.2, 3620.8, 3617.0, 3620.5),  # Strong M5 displacement + MSS + FVG + > 21 EMA!
+        ]
+    )
+    m5_bars = [
+        CandleBar(
+            symbol="XAUUSDm",
+            timeframe="M5",
+            candle_time=m5_start + timedelta(minutes=5 * idx),
+            open=Decimal(f"{op:.3f}"),
+            high=Decimal(f"{hi:.3f}"),
+            low=Decimal(f"{lo:.3f}"),
+            close=Decimal(f"{cl:.3f}"),
+            volume=Decimal("180" if idx == len(m5_tuples) - 1 else "80"),
+        )
+        for idx, (op, hi, lo, cl) in enumerate(m5_tuples)
+    ]
+
+    strat = XauusdElliottWaveV1Strategy(price_digits=3)
+    ctx = StrategyContext(
+        symbol="XAUUSDm",
+        now_utc=datetime(2026, 11, 3, 13, 30, tzinfo=UTC),
+        current_bid=Decimal("3620.300"),
+        current_ask=Decimal("3620.540"),
+        max_spread=Decimal("0.600"),
+        h1_bars=h1_bars,
+        m15_bars=m15_bars,
+        m5_bars=m5_bars,
+    )
+    cand = strat.evaluate(ctx)
+    assert cand is not None
+    assert cand.timeframe == "M5"
+    assert cand.direction == "BUY"
+    assert cand.indicators["mtfRoles"] == {
+        "higherTimeframe": "H1",
+        "countingTimeframe": "M15",
+        "lowerTimeframe": "M5",
+    }
+    assert cand.indicators["elliottWave"]["anchorDivergences"] >= 2
+    assert cand.indicators["m5"] is not None
+    assert cand.stop_loss < Decimal("3613.500")
+    assert cand.reward_risk >= Decimal("2.00")
+
+
+

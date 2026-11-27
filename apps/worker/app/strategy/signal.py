@@ -37,6 +37,7 @@ class StrategyContext(BaseModel):
     symbol: str
     h1_bars: list[CandleBar]
     m15_bars: list[CandleBar]
+    m5_bars: list[CandleBar] = Field(default_factory=list)
     current_bid: Decimal
     current_ask: Decimal
     max_spread: Decimal
